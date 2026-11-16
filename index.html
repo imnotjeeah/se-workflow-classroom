@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SE Workflow · 开发编排工作台</title>
+  <link rel="stylesheet" href="./style.css">
+  <style>
+    [hidden] { display: none !important; }
+    .startup {
+      max-width: 46rem;
+      margin: 24px auto;
+      padding: 26px;
+      border: 1px solid #d6e2da;
+      border-radius: 14px;
+      background: #f3f8f4;
+      color: #132922;
+      font: 16px/1.65 "Microsoft YaHei UI", sans-serif;
+    }
+    .startup h2 { font-size: 22px; margin: 0; }
+    .startup a {
+      display: inline-block;
+      padding: 8px 15px;
+      border-radius: 8px;
+      background: #0b654c;
+      color: #fff;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <header class="mast">
+    <div class="brand"><span class="mark" aria-hidden="true">↳</span> SE Workflow</div>
+    <div class="mast-actions" id="mast-actions" hidden>
+      <div class="connection" id="connection" role="status">正在读取 DeepSeek API 配置</div>
+      <button id="configure" type="button">DeepSeek 密钥</button>
+    </div>
+  </header>
+  <main>
+    <div class="hero">
+      <div><p class="eyebrow">软件工程 / 课堂作业 2</p><h1>开发编排工作台</h1>
+      <p class="subtitle">从设计规格生成可追溯的开发任务与执行计划。</p></div>
+      <nav class="flow" id="flow" aria-label="工作流步骤" hidden>
+        <button id="go-spec" type="button">Design Spec</button>
+        <button id="go-tasks" type="button">PM Agent</button>
+        <button id="go-graph" type="button">任务编排</button>
+      </nav>
+    </div>
+    <section id="startup" class="startup" aria-labelledby="startup-title">
+      <h2 id="startup-title">打开工作台</h2>
+      <p role="status">正在加载工作台。请先完整解压，确保网页和配套文件在同一个文件夹。</p>
+      <a href="http://127.0.0.1:8765/">已运行 Start.cmd，打开工作台</a>
+    </section>
+    <div id="workspace" class="workspace" hidden>
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <div class="panel-head"><h2 id="input-title">设计规格</h2><span class="small-label">Design Spec</span></div>
+        <div class="input-body">
+          <label for="example">演示案例</label>
+          <select id="example"></select>
+          <label for="spec">规格正文</label>
+          <textarea id="spec" maxlength="4000" spellcheck="false"></textarea>
+          <div class="editor-foot"><span id="count"></span><label class="upload">导入 TXT / MD<input id="file" type="file" accept=".txt,.md,text/plain,text/markdown"></label></div>
+          <label for="capacity">每批并行上限</label>
+          <select id="capacity"></select>
+          <button id="run" class="primary" type="button">运行工作流 <span aria-hidden="true">↗</span></button>
+          <p class="request-note">运行时，规格正文会发送至 DeepSeek API。</p>
+          <p id="service-help" class="request-note" hidden>在线生成需要启动原版目录里的 Start.cmd。启动后可在本页重试，或<a href="http://127.0.0.1:8765/">打开服务版工作台</a>。</p>
+          <label class="replay upload">导入 DeepSeek 结果 JSON<input id="replay" type="file" accept=".json,application/json"></label>
+          <p id="input-error" class="error" role="alert"></p>
+        </div>
+      </section>
+      <section class="panel result-panel" aria-labelledby="result-title">
+        <div class="panel-head">
+          <div><h2 id="result-title" tabindex="-1">工作流输出</h2><div class="provenance" id="provenance"></div></div>
+          <div class="exports" id="exports" hidden>
+            <button id="gen-code" type="button">生成当前任务代码</button>
+            <button id="report" type="button">导出计划 Markdown</button>
+            <button id="download" type="button">导出 JSON</button>
+          </div>
+        </div>
+        <div id="notice" class="notice" role="status">
+          <div class="empty-mark" aria-hidden="true">↳</div>
+          <strong id="notice-title">等待运行工作流</strong>
+          <p id="notice-body">选择案例或输入规格，查看任务分解和依赖关系。</p>
+        </div>
+        <div id="results" hidden>
+          <div class="metrics" id="metrics"></div>
+          <div class="tabs" aria-label="输出视图">
+            <button type="button" data-view="tasks" aria-pressed="true">任务分解</button>
+            <button type="button" data-view="graph" aria-pressed="false">依赖图</button>
+            <button type="button" data-view="rounds" aria-pressed="false">执行批次</button>
+          </div>
+          <div id="view"></div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <dialog id="key-dialog" aria-labelledby="key-title">
+    <form id="key-form">
+      <h2 id="key-title">设置 DeepSeek API 密钥</h2>
+      <p class="hint">密钥只在当前页面使用。关闭或刷新页面后需重新填写。</p>
+      <label for="key-input">API 密钥</label>
+      <input id="key-input" type="password" required maxlength="512" autocomplete="off" spellcheck="false" autofocus>
+      <p id="key-error" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">获取 DeepSeek API 密钥 ↗</a>
+        <button id="cancel-key" type="button">取消</button>
+        <button id="save-key" type="submit">使用密钥</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="./app.browser.js"></script>
+</body>
+</html>

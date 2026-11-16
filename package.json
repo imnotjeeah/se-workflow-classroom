@@ -1,0 +1,17 @@
+{
+  "name": "se-workflow-classroom",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "build": "node build.mjs",
+    "build:windows": "node build.mjs --windows"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
