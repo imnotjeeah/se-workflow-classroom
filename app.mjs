@@ -431,8 +431,47 @@ function showRounds(tasksById) {
   });
 }
 
+function overviewEdges(edges, ids) {
+  const successors = new Map(ids.map(id => [id, []]));
+  for (const {from, to} of edges) successors.get(from).push(to);
+  return edges.filter(({from, to}) => {
+    const pending = successors.get(from).filter(id => id !== to);
+    const seen = new Set();
+    while (pending.length) {
+      const id = pending.pop();
+      if (id === to) return false;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      pending.push(...successors.get(id));
+    }
+    return true;
+  });
+}
+
+function spreadPorts(routes, endpoint, other, coordinate) {
+  const groups = new Map();
+  for (const route of routes) {
+    const node = route[endpoint];
+    if (!groups.has(node)) groups.set(node, []);
+    groups.get(node).push(route);
+  }
+  for (const [node, group] of groups) {
+    group.sort((a, b) => a[other].middle - b[other].middle || a[other].batch - b[other].batch);
+    const spacing = Math.min(12, (node.height - 18) / group.length);
+    group.forEach((route, index) => {
+      route[coordinate] = node.middle + (index - (group.length - 1) / 2) * spacing;
+    });
+  }
+}
+
 function showGraph(tasksById) {
-  view.append(element('p', '箭头从交付物生产任务指向使用任务。测试会等待同一需求下的非测试任务。选中节点可查看详情。', 'hint'));
+  const toolbar = element('div', '', 'graph-toolbar');
+  const explanation = element('p', '', 'hint');
+  explanation.setAttribute('role', 'status');
+  const reset = element('button', '返回总览');
+  reset.type = 'button';
+  toolbar.append(explanation, reset);
+  view.append(toolbar);
   const scroll = element('div', '', 'graph-scroll');
   scroll.tabIndex = 0;
   scroll.setAttribute('aria-label', '可横向滚动的任务依赖图');
@@ -443,8 +482,58 @@ function showGraph(tasksById) {
   scroll.append(graph);
   const detail = element('div', '', 'graph-detail');
   const buttons = new Map();
+  const columns = [];
+  const batches = new Map(arrangement.rounds.flatMap((ids, batch) => ids.map(id => [id, batch])));
+  const overview = overviewEdges(arrangement.edges, [...batches.keys()]);
 
   function draw() {
+    const edges = selected
+      ? arrangement.edges.filter(edge => edge.from === selected || edge.to === selected)
+      : overview;
+    const bounds = graph.getBoundingClientRect();
+    const nodes = new Map([...buttons].map(([id, button]) => {
+      const box = button.getBoundingClientRect();
+      return [id, {
+        left: box.left - bounds.left, right: box.right - bounds.left,
+        middle: box.top + box.height / 2 - bounds.top, height: box.height, batch: batches.get(id),
+      }];
+    }));
+    const routes = edges.map(edge => ({edge, start: nodes.get(edge.from), end: nodes.get(edge.to)}));
+    spreadPorts(routes, 'start', 'end', 'y1');
+    spreadPorts(routes, 'end', 'start', 'y2');
+
+    const gutters = columns.slice(1).map(() => []);
+    const longRoutes = [];
+    for (const route of routes) {
+      const {start, end} = route;
+      if (end.batch === start.batch + 1) {
+        gutters[start.batch].push({route, key: 'out', order: route.y1 - route.y2});
+      } else {
+        gutters[start.batch].push({route, key: 'out', order: -Infinity});
+        gutters[end.batch - 1].push({route, key: 'in', order: Infinity});
+        longRoutes.push(route);
+      }
+    }
+    gutters.forEach((tracks, index) => {
+      const left = columns[index].getBoundingClientRect().right - bounds.left + 8;
+      const right = columns[index + 1].getBoundingClientRect().left - bounds.left - 10;
+      tracks.sort((a, b) => a.order - b.order || a.route.y1 - b.route.y1 || a.route.y2 - b.route.y2);
+      tracks.forEach(({route, key}, lane) => {
+        route[key] = left + (right - left) * (lane + 1) / (tracks.length + 1);
+      });
+    });
+
+    const rows = [];
+    const belowCards = Math.max(...columns.map(column => column.lastElementChild.getBoundingClientRect().bottom)) - bounds.top;
+    longRoutes.sort((a, b) => a.start.batch - b.start.batch || a.end.batch - b.end.batch);
+    for (const route of longRoutes) {
+      let row = rows.findIndex(end => end < route.start.batch);
+      if (row === -1) row = rows.length;
+      rows[row] = route.end.batch;
+      route.floor = belowCards + 15 + row * 11;
+    }
+    graph.style.paddingBottom = 16 + rows.length * 11 + 'px';
+
     const ratio = window.devicePixelRatio || 1;
     canvas.width = Math.ceil(graph.clientWidth * ratio);
     canvas.height = Math.ceil(graph.clientHeight * ratio);
@@ -452,21 +541,22 @@ function showGraph(tasksById) {
     canvas.style.height = graph.clientHeight + 'px';
     const context = canvas.getContext('2d');
     context.scale(ratio, ratio);
-    const bounds = graph.getBoundingClientRect();
-    for (const {from, to} of arrangement.edges) {
-      const start = buttons.get(from).getBoundingClientRect();
-      const end = buttons.get(to).getBoundingClientRect();
-      const x1 = start.right - bounds.left;
-      const y1 = start.top + start.height / 2 - bounds.top;
-      const x2 = end.left - bounds.left - 2;
-      const y2 = end.top + end.height / 2 - bounds.top;
-      const bend = Math.min((x2 - x1) / 2, 23);
-      const color = !selected || selected === from || selected === to ? '#29735c' : '#b4c9bd';
-      context.strokeStyle = context.fillStyle = color;
+    context.lineJoin = 'round';
+    for (const {edge, start, end, y1, y2, out, in: entry, floor} of routes) {
+      const x2 = end.left - 2;
+      context.strokeStyle = context.fillStyle = edge.to === selected ? '#376e9e' : '#34745e';
       context.lineWidth = 1.6;
       context.beginPath();
-      context.moveTo(x1, y1);
-      context.bezierCurveTo(x1 + bend, y1, x2 - bend, y2, x2, y2);
+      context.moveTo(start.right, y1);
+      context.lineTo(out, y1);
+      if (floor !== undefined) {
+        context.lineTo(out, floor);
+        context.lineTo(entry, floor);
+        context.lineTo(entry, y2);
+      } else {
+        context.lineTo(out, y2);
+      }
+      context.lineTo(x2, y2);
       context.stroke();
       context.beginPath();
       context.moveTo(x2, y2);
@@ -479,6 +569,17 @@ function showGraph(tasksById) {
   function select(id) {
     selected = id;
     for (const [taskId, button] of buttons) button.setAttribute('aria-pressed', String(id === taskId));
+    reset.hidden = !id;
+    if (!id) {
+      const hidden = arrangement.edges.length - overview.length;
+      explanation.textContent = '总览显示 ' + overview.length + ' 条连线。' +
+        (hidden ? '另有 ' + hidden + ' 条可通过中间任务追溯。' : '') + '点击任务可查看它的全部直接依赖。';
+      detail.replaceChildren();
+      draw();
+      return;
+    }
+    const count = arrangement.edges.filter(edge => edge.from === id || edge.to === id).length;
+    explanation.textContent = id + ' 的 ' + count + ' 条连线 · 蓝色为前置依赖，绿色指向后续任务。';
     const task = tasksById.get(id);
     const card = taskCard(task, true);
     for (const [caption, here, other] of [
@@ -519,15 +620,20 @@ function showGraph(tasksById) {
       button.id = 'node-' + id;
       button.type = 'button';
       button.setAttribute('aria-pressed', 'false');
-      button.addEventListener('click', () => select(id));
+      button.addEventListener('click', () => select(selected === id ? '' : id));
       buttons.set(id, button);
       column.append(button);
     }
     graph.append(column);
+    columns.push(column);
   });
   view.append(scroll, detail);
-  if (selected) select(selected);
-  else detail.append(element('p', '点击任意任务查看详情。', 'hint'));
+  reset.addEventListener('click', () => {
+    const node = buttons.get(selected);
+    select('');
+    node?.focus({preventScroll: true});
+  });
+  select(selected);
   observer = new ResizeObserver(draw);
   observer.observe(graph);
 }

@@ -93,9 +93,12 @@ summary{cursor:pointer;font-weight:700}
 .task-meta{display:block;margin-bottom:4px}
 .task p{margin:6px 0 0;line-height:1.55}
 .graph-scroll{overflow:auto;border:1px solid var(--line);border-radius:10px;background:#f7faf8}
-.graph{position:relative;display:flex;width:max-content;min-width:100%;gap:42px;padding:12px 14px 15px}
+.graph-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.graph-toolbar p{margin:0}
+.graph-toolbar button{flex:none;font-size:12px}
+.graph{position:relative;display:flex;width:max-content;min-width:100%;gap:72px;padding:12px 14px 16px}
 .graph canvas{position:absolute;inset:0;pointer-events:none}
-.column{position:relative;width:157px;display:flex;flex-direction:column;gap:9px}
+.column{position:relative;width:157px;display:flex;flex-direction:column;gap:14px}
 .column h3{font-size:13px;color:var(--muted);margin:2px 0 0}
 .column .task{text-align:left;width:100%}
 .column .task[aria-pressed=true]{border-color:var(--green);background:var(--soft)}

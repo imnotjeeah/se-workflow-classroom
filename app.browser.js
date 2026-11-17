@@ -396,7 +396,7 @@
     overlay.style.cssText = "position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(244, 247, 244, 0.85); backdrop-filter: blur(4px); z-index:99999; display:flex; justify-content:center; align-items:center;";
     const box = document.createElement("div");
     box.style.cssText = "background:#ffffff; width:80%; max-width:850px; border-radius:12px; border:1px solid #d6e2da; box-shadow: 0 10px 40px rgba(11, 101, 76, 0.15); overflow:hidden; text-align:left; display:flex; flex-direction:column;";
-    const codeStr = `// \u81EA\u52A8\u751F\u6210\u7684\u5DE5\u7A0B\u4EE3\u7801 (\u7531 SE Workflow \u751F\u6210)
+    const codeStr = `
 // \u4EFB\u52A1\uFF1A${projectName} - \u6838\u5FC3\u540E\u7AEF\u63A5\u53E3\u4E0E\u6570\u636E\u6A21\u578B
 // \u6846\u67B6\uFF1ANode.js + TypeScript + Express
 
@@ -408,12 +408,10 @@ export const executeCoreTask = async (req: Request, res: Response) => {
   try {
     const { days, spots } = req.body;
     
-    // \u6838\u5FC3\u6821\u9A8C\u903B\u8F91 (\u6839\u636E\u5951\u7EA6\u81EA\u52A8\u751F\u6210)
     if (!Number.isInteger(days) || days <= 0) {
       return res.status(400).json({ error: '\u53C2\u6570\u6821\u9A8C\u5931\u8D25\uFF0C\u5929\u6570\u5FC5\u987B\u4E3A\u6B63\u6574\u6570' });
     }
 
-    // \u6267\u884C\u6570\u636E\u5E93\u4E8B\u52A1
     const record = await prisma.coreTask.create({
       data: {
         userId: req.user.id,
@@ -519,8 +517,45 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       view.append(round);
     });
   }
+  function overviewEdges(edges, ids) {
+    const successors = new Map(ids.map((id) => [id, []]));
+    for (const { from, to } of edges) successors.get(from).push(to);
+    return edges.filter(({ from, to }) => {
+      const pending = successors.get(from).filter((id) => id !== to);
+      const seen = /* @__PURE__ */ new Set();
+      while (pending.length) {
+        const id = pending.pop();
+        if (id === to) return false;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        pending.push(...successors.get(id));
+      }
+      return true;
+    });
+  }
+  function spreadPorts(routes, endpoint, other, coordinate) {
+    const groups = /* @__PURE__ */ new Map();
+    for (const route of routes) {
+      const node = route[endpoint];
+      if (!groups.has(node)) groups.set(node, []);
+      groups.get(node).push(route);
+    }
+    for (const [node, group] of groups) {
+      group.sort((a, b) => a[other].middle - b[other].middle || a[other].batch - b[other].batch);
+      const spacing = Math.min(12, (node.height - 18) / group.length);
+      group.forEach((route, index) => {
+        route[coordinate] = node.middle + (index - (group.length - 1) / 2) * spacing;
+      });
+    }
+  }
   function showGraph(tasksById) {
-    view.append(element("p", "\u7BAD\u5934\u4ECE\u4EA4\u4ED8\u7269\u751F\u4EA7\u4EFB\u52A1\u6307\u5411\u4F7F\u7528\u4EFB\u52A1\u3002\u6D4B\u8BD5\u4F1A\u7B49\u5F85\u540C\u4E00\u9700\u6C42\u4E0B\u7684\u975E\u6D4B\u8BD5\u4EFB\u52A1\u3002\u9009\u4E2D\u8282\u70B9\u53EF\u67E5\u770B\u8BE6\u60C5\u3002", "hint"));
+    const toolbar = element("div", "", "graph-toolbar");
+    const explanation = element("p", "", "hint");
+    explanation.setAttribute("role", "status");
+    const reset = element("button", "\u8FD4\u56DE\u603B\u89C8");
+    reset.type = "button";
+    toolbar.append(explanation, reset);
+    view.append(toolbar);
     const scroll = element("div", "", "graph-scroll");
     scroll.tabIndex = 0;
     scroll.setAttribute("aria-label", "\u53EF\u6A2A\u5411\u6EDA\u52A8\u7684\u4EFB\u52A1\u4F9D\u8D56\u56FE");
@@ -531,7 +566,55 @@ export const executeCoreTask = async (req: Request, res: Response) => {
     scroll.append(graph);
     const detail = element("div", "", "graph-detail");
     const buttons = /* @__PURE__ */ new Map();
+    const columns = [];
+    const batches = new Map(arrangement.rounds.flatMap((ids, batch) => ids.map((id) => [id, batch])));
+    const overview = overviewEdges(arrangement.edges, [...batches.keys()]);
     function draw() {
+      const edges = selected ? arrangement.edges.filter((edge) => edge.from === selected || edge.to === selected) : overview;
+      const bounds = graph.getBoundingClientRect();
+      const nodes = new Map([...buttons].map(([id, button]) => {
+        const box = button.getBoundingClientRect();
+        return [id, {
+          left: box.left - bounds.left,
+          right: box.right - bounds.left,
+          middle: box.top + box.height / 2 - bounds.top,
+          height: box.height,
+          batch: batches.get(id)
+        }];
+      }));
+      const routes = edges.map((edge) => ({ edge, start: nodes.get(edge.from), end: nodes.get(edge.to) }));
+      spreadPorts(routes, "start", "end", "y1");
+      spreadPorts(routes, "end", "start", "y2");
+      const gutters = columns.slice(1).map(() => []);
+      const longRoutes = [];
+      for (const route of routes) {
+        const { start, end } = route;
+        if (end.batch === start.batch + 1) {
+          gutters[start.batch].push({ route, key: "out", order: route.y1 - route.y2 });
+        } else {
+          gutters[start.batch].push({ route, key: "out", order: -Infinity });
+          gutters[end.batch - 1].push({ route, key: "in", order: Infinity });
+          longRoutes.push(route);
+        }
+      }
+      gutters.forEach((tracks, index) => {
+        const left = columns[index].getBoundingClientRect().right - bounds.left + 8;
+        const right = columns[index + 1].getBoundingClientRect().left - bounds.left - 10;
+        tracks.sort((a, b) => a.order - b.order || a.route.y1 - b.route.y1 || a.route.y2 - b.route.y2);
+        tracks.forEach(({ route, key }, lane) => {
+          route[key] = left + (right - left) * (lane + 1) / (tracks.length + 1);
+        });
+      });
+      const rows = [];
+      const belowCards = Math.max(...columns.map((column) => column.lastElementChild.getBoundingClientRect().bottom)) - bounds.top;
+      longRoutes.sort((a, b) => a.start.batch - b.start.batch || a.end.batch - b.end.batch);
+      for (const route of longRoutes) {
+        let row = rows.findIndex((end) => end < route.start.batch);
+        if (row === -1) row = rows.length;
+        rows[row] = route.end.batch;
+        route.floor = belowCards + 15 + row * 11;
+      }
+      graph.style.paddingBottom = 16 + rows.length * 11 + "px";
       const ratio = window.devicePixelRatio || 1;
       canvas.width = Math.ceil(graph.clientWidth * ratio);
       canvas.height = Math.ceil(graph.clientHeight * ratio);
@@ -539,21 +622,22 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       canvas.style.height = graph.clientHeight + "px";
       const context = canvas.getContext("2d");
       context.scale(ratio, ratio);
-      const bounds = graph.getBoundingClientRect();
-      for (const { from, to } of arrangement.edges) {
-        const start = buttons.get(from).getBoundingClientRect();
-        const end = buttons.get(to).getBoundingClientRect();
-        const x1 = start.right - bounds.left;
-        const y1 = start.top + start.height / 2 - bounds.top;
-        const x2 = end.left - bounds.left - 2;
-        const y2 = end.top + end.height / 2 - bounds.top;
-        const bend = Math.min((x2 - x1) / 2, 23);
-        const color = !selected || selected === from || selected === to ? "#29735c" : "#b4c9bd";
-        context.strokeStyle = context.fillStyle = color;
+      context.lineJoin = "round";
+      for (const { edge, start, end, y1, y2, out, in: entry, floor } of routes) {
+        const x2 = end.left - 2;
+        context.strokeStyle = context.fillStyle = edge.to === selected ? "#376e9e" : "#34745e";
         context.lineWidth = 1.6;
         context.beginPath();
-        context.moveTo(x1, y1);
-        context.bezierCurveTo(x1 + bend, y1, x2 - bend, y2, x2, y2);
+        context.moveTo(start.right, y1);
+        context.lineTo(out, y1);
+        if (floor !== void 0) {
+          context.lineTo(out, floor);
+          context.lineTo(entry, floor);
+          context.lineTo(entry, y2);
+        } else {
+          context.lineTo(out, y2);
+        }
+        context.lineTo(x2, y2);
         context.stroke();
         context.beginPath();
         context.moveTo(x2, y2);
@@ -565,6 +649,16 @@ export const executeCoreTask = async (req: Request, res: Response) => {
     function select(id) {
       selected = id;
       for (const [taskId, button] of buttons) button.setAttribute("aria-pressed", String(id === taskId));
+      reset.hidden = !id;
+      if (!id) {
+        const hidden = arrangement.edges.length - overview.length;
+        explanation.textContent = "\u603B\u89C8\u663E\u793A " + overview.length + " \u6761\u8FDE\u7EBF\u3002" + (hidden ? "\u53E6\u6709 " + hidden + " \u6761\u53EF\u901A\u8FC7\u4E2D\u95F4\u4EFB\u52A1\u8FFD\u6EAF\u3002" : "") + "\u70B9\u51FB\u4EFB\u52A1\u53EF\u67E5\u770B\u5B83\u7684\u5168\u90E8\u76F4\u63A5\u4F9D\u8D56\u3002";
+        detail.replaceChildren();
+        draw();
+        return;
+      }
+      const count = arrangement.edges.filter((edge) => edge.from === id || edge.to === id).length;
+      explanation.textContent = id + " \u7684 " + count + " \u6761\u8FDE\u7EBF \xB7 \u84DD\u8272\u4E3A\u524D\u7F6E\u4F9D\u8D56\uFF0C\u7EFF\u8272\u6307\u5411\u540E\u7EED\u4EFB\u52A1\u3002";
       const task = tasksById.get(id);
       const card = taskCard(task, true);
       for (const [caption, here, other] of [
@@ -605,15 +699,20 @@ export const executeCoreTask = async (req: Request, res: Response) => {
         button.id = "node-" + id;
         button.type = "button";
         button.setAttribute("aria-pressed", "false");
-        button.addEventListener("click", () => select(id));
+        button.addEventListener("click", () => select(selected === id ? "" : id));
         buttons.set(id, button);
         column.append(button);
       }
       graph.append(column);
+      columns.push(column);
     });
     view.append(scroll, detail);
-    if (selected) select(selected);
-    else detail.append(element("p", "\u70B9\u51FB\u4EFB\u610F\u4EFB\u52A1\u67E5\u770B\u8BE6\u60C5\u3002", "hint"));
+    reset.addEventListener("click", () => {
+      const node = buttons.get(selected);
+      select("");
+      node?.focus({ preventScroll: true });
+    });
+    select(selected);
     observer = new ResizeObserver(draw);
     observer.observe(graph);
   }
