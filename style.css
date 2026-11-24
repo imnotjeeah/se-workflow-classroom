@@ -97,6 +97,10 @@ summary{cursor:pointer;font-weight:700}
 .task{padding:10px;border:1px solid var(--line);border-radius:8px;background:white;font-size:13px;overflow-wrap:anywhere}
 .task strong{display:block;line-height:1.5}
 .task-meta{display:block;margin-bottom:4px}
+.task-agent{display:table;margin-top:6px;border-radius:5px;padding:2px 5px;background:#e8f3ec;color:#255748;font-size:11px;font-weight:700}
+.agent-artifact{margin:8px 0;padding:8px 10px}
+.agent-artifact pre{max-height:270px;overflow:auto;margin:8px 0;font-size:12px;white-space:pre}
+.execution-actions button:disabled{cursor:default}
 .task p{margin:6px 0 0;line-height:1.55}
 .graph-scroll{overflow:auto;border:1px solid var(--line);border-radius:10px;background:#f7faf8}
 .graph-layouts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
@@ -105,17 +109,18 @@ summary{cursor:pointer;font-weight:700}
 .graph-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
 .graph-toolbar p{margin:0}
 .graph-toolbar button{flex:none;font-size:12px}
-.graph{position:relative;display:flex;width:max-content;min-width:100%;gap:72px;padding:12px 14px 16px}
-.graph canvas{position:absolute;inset:0;pointer-events:none}
+.graph{position:relative;isolation:isolate;display:flex;width:max-content;min-width:100%;gap:72px;padding:12px 14px 16px}
+.graph canvas{position:absolute;inset:0;z-index:1;pointer-events:none}
 .column{position:relative;width:157px;display:flex;flex-direction:column;gap:14px}
 .column h3{font-size:13px;color:var(--muted);margin:2px 0 0}
 .column .task{text-align:left;width:100%}
+.column h3,.column .task{position:relative;z-index:2}
 .column .task[aria-pressed=true]{border-color:var(--green);background:var(--soft)}
 .graph-detail{margin-top:9px}
 .graph-rollback{margin-top:10px;padding:1px 9px 7px;border:1px solid #e1c19d;border-radius:8px;background:#fff7ed}
 .graph-rollback h3{margin-top:5px;color:#814817}
 .graph-vertical{flex-direction:column;align-items:stretch;gap:64px;padding-bottom:46px}
-.graph-vertical .column{width:auto;flex-direction:row;gap:17px;align-items:stretch;padding:8px;border:1px solid #dce7df;border-radius:10px;background:#edf4ef}
+.graph-vertical .column{width:max-content;align-self:flex-start;flex-direction:row;gap:17px;align-items:stretch;padding:8px;border:1px solid #dce7df;border-radius:10px;background:#edf4ef}
 .graph-vertical .column h3{width:77px;padding:7px 0 0 4px;flex:none}
 .graph-vertical .column h3 span{display:block;font-weight:400;font-size:11px;margin-top:4px}
 .graph-vertical .column .task{width:143px;flex:none}

@@ -3,6 +3,7 @@ import test from 'node:test';
 import {addTestTasks, schedule, serialImplementationChain} from '../workflow.mjs';
 import {assignTestCases, bindTestCases, bindTestTasks, validateTaskLinks, validateTestPlan} from '../pipeline.mjs';
 import {rollbackTask, taskState, transition, validateRuntime} from '../interaction.mjs';
+import {agentForTask, approvedHandoffs, validateAgentOutput} from '../agents.mjs';
 
 const requirements = [
   {id:'R1', text:'展示并提交行程', acceptance:'拒绝无效的行程'},
@@ -133,4 +134,31 @@ test('previous plans without test metadata retain their original dependencies', 
     {id:'T2', title:'测试', role:'测试', requirements:['R1'], inputs:[], output:'report', acceptance:'验收'},
   ]};
   assert.deepEqual(schedule(legacy, 4).rounds, [['T1'], ['T2']]);
+});
+
+test('agent handoffs only include the confirmed attempt and a rejected review blocks delivery', () => {
+  const task = plan.tasks.find(item => item.id === 'T1');
+  const review = plan.tasks.find(item => item.review?.target === task.id);
+  const files = [{path:'src/validator.mjs', content:'export const valid = days => days > 0;'}];
+  assert.equal(agentForTask(task).name, '后端开发 Agent');
+  assert.equal(agentForTask(review).name, '代码评审 Agent');
+  assert.equal(agentForTask({...task, kind:'contract'}).name, '设计 Agent');
+  assert.throws(() => validateAgentOutput({summary:'无效相对路径', artifacts:[{...files[0], path:'../file.js'}]}, task),
+    /相对路径/);
+  const runtime = {T1:transition('T1', 'start', '开始编码', {}, arrangement)};
+  runtime.T1.agentOutput = {summary:'完成校验', artifacts:files, model:'fixture', attempt:1};
+  assert.throws(() => approvedHandoffs(['T1'], runtime), /尚未确认/);
+  runtime.T1 = transition('T1', 'complete', '人工核对接口后交付', runtime, arrangement);
+  assert.deepEqual(approvedHandoffs(['T1'], runtime), [{id:'T1', note:'人工核对接口后交付', artifacts:files}]);
+  runtime[review.id] = transition(review.id, 'start', '开始评审', runtime, arrangement);
+  runtime[review.id].agentOutput = {summary:'需补边界处理', artifacts:[{path:'review.md', content:'需补边界处理'}],
+    verdict:'changes_requested', model:'fixture', attempt:1};
+  assert.throws(() => transition(review.id, 'complete', '交付', runtime, arrangement), /评审尚未通过/);
+  runtime[review.id] = transition(review.id, 'fail', '记录边界问题', runtime, arrangement);
+  const rolled = rollbackTask(review, 'T1', '修正边界', runtime, arrangement).runtime;
+  assert.throws(() => approvedHandoffs(['T1'], rolled), /尚未确认/);
+  rolled.T1 = transition('T1', 'retry', '开始修复', rolled, arrangement);
+  rolled.T1 = transition('T1', 'complete', '人工提交新代码', rolled, arrangement);
+  assert.deepEqual(approvedHandoffs(['T1'], rolled)[0].artifacts, []);
+  validateRuntime(rolled, plan, arrangement);
 });

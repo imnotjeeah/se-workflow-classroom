@@ -3,6 +3,7 @@ import { schedule, taskStage, testLevelLabels } from './workflow.mjs';
 import { validateDesign, validateTaskLinks, validateTestPlan, designMarkdown, designFeedback } from './pipeline.mjs';
 import { createObservability } from './observability.mjs';
 import { rollbackScope, rollbackTargets } from './interaction.mjs';
+import { agentForTask, planningAgents } from './agents.mjs';
 
 const byId = id => document.getElementById(id);
 const directFile = location.protocol === 'file:';
@@ -39,6 +40,7 @@ const monitor = createObservability({
   request: requestStage, ready: ensureReady, getResult: () => result, getArrangement: () => arrangement,
   download: downloadFile, isBusy: () => busy, setBusy: lock,
   renderCases: taskCases, openPlan: () => selectWorkspace(false, true),
+  refreshExecution: () => { if (result && active === 'execution') render(); },
   adopt: text => {
     inputMode.value = 'idea';
     spec.value = text;
@@ -205,12 +207,13 @@ function lock(value) {
   run.textContent = value ? '正在生成…' : runLabel();
 }
 
-async function requestStage(endpoint, body) {
+async function requestStage(endpoint, body, track = true) {
   const labels = {discussion:'讨论提炼',requirements:'想法 → 需求规格',design:'需求 → 设计规格',
     decompose:'设计 → 开发任务分解', 'test-plan':'测试方案 → 实现任务集'};
   const label = labels[endpoint] || endpoint;
   const started = performance.now();
-  monitor.log(label, '开始', '已提交 DeepSeek API 请求');
+  const agent = planningAgents[endpoint];
+  if (track) monitor.log(label, '开始', '已提交 DeepSeek API 请求', {agent});
   try {
     const response = await fetch(apiBase + '/api/' + endpoint, {
     method: 'POST',
@@ -219,12 +222,14 @@ async function requestStage(endpoint, body) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error);
-    monitor.log(label, '完成', '产物通过结构校验，耗时 ' + ((performance.now()-started)/1000).toFixed(1) + ' 秒',
-      {model:data.model, validations: data.validations || []});
-    for (const message of data.validations || []) monitor.log(label, '校验修正', message);
+    if (track) {
+      monitor.log(label, '完成', '产物通过结构校验，耗时 ' + ((performance.now()-started)/1000).toFixed(1) + ' 秒',
+        {agent, model:data.model, validations: data.validations || []});
+      for (const message of data.validations || []) monitor.log(label, '校验修正', message, {agent});
+    }
     return data;
   } catch (error) {
-    monitor.log(label, '失败', error.message);
+    if (track) monitor.log(label, '失败', error.message, {agent});
     throw error;
   }
 }
@@ -448,6 +453,8 @@ function renderChain() {
     design: Boolean(pipeline?.design), schedule: Boolean(result), feedback: Boolean(result),
     tests: Boolean(pipeline?.testPlan),
   };
+  const owners = {idea:'参会者 / 负责人', requirements:planningAgents.requirements, design:planningAgents.design,
+    tests:planningAgents['test-plan'], schedule:planningAgents.decompose + ' / 编排器', feedback:'编排器'};
   byId('chain-steps').replaceChildren(...steps.map(([id, label]) => {
     const step = element('button', label);
     step.type = 'button';
@@ -455,6 +462,7 @@ function renderChain() {
     step.setAttribute('aria-pressed', String(id === chainView));
     step.append(element('span', id === runningStage ? '生成中' : available[id]
       ? (id === 'idea' ? '原始输入' : '可查看') : '待生成'));
+    step.append(element('span', owners[id], 'chain-owner'));
     step.addEventListener('click', () => openChain(id));
     return step;
   }));
@@ -574,12 +582,14 @@ function taskCard(task, full = false, interactive = false) {
   }
 
   const stage = taskStage(task);
+  const agent = agentForTask(task);
   card.append(element('span', task.id + ' · ' + (stage === '编码' ? '编码 / ' + task.role : stage) +
     ' · ' + task.requirements.join('、'), 'task-meta'),
-    element('strong', task.title));
+    element('strong', task.title), element('span', agent.name, 'task-agent'));
     
   if (full) {
     card.append(
+      element('p', '职责：' + agent.duty),
       element('p', '声明输入：' + (task.inputs.join('、') || 'Design Spec')),
       element('p', '交付：' + task.output),
       element('p', '验收：' + task.acceptance));
@@ -854,13 +864,14 @@ function showGraph(tasksById) {
     });
 
     const rows = [];
-    const belowCards = Math.max(...columns.map(column => acrossEnd(column.lastElementChild.getBoundingClientRect()))) + 18;
+    const laneStart = Math.max(...columns.map(column =>
+      acrossEnd((vertical ? column : column.lastElementChild).getBoundingClientRect()))) + 18;
     longRoutes.sort((a, b) => a.start.batch - b.start.batch || a.end.batch - b.end.batch);
     for (const route of longRoutes) {
       let row = rows.findIndex(end => end < route.start.batch);
       if (row === -1) row = rows.length;
       rows[row] = route.end.batch;
-      route.floor = belowCards + row * 11;
+      route.floor = laneStart + row * 11;
     }
     const returns = vertical && selected ? rollbackTargets(tasksById.get(selected)) : [];
     graph.style[vertical ? 'paddingRight' : 'paddingBottom'] = 26 + (rows.length + returns.length) * 11 + 'px';
@@ -900,7 +911,7 @@ function showGraph(tasksById) {
     returns.forEach((id, index) => {
       const from = nodes.get(selected);
       const to = nodes.get(id);
-      const lane = belowCards + (rows.length + index) * 11;
+      const lane = laneStart + (rows.length + index) * 11;
       const leave = endOf(columns[from.batch].getBoundingClientRect()) + 16 + index * 4;
       const enter = endOf(columns[to.batch].getBoundingClientRect()) + 19;
       drawRoute([[from.right, from.middle + 6], [leave, from.middle + 6], [leave, lane],
@@ -925,6 +936,15 @@ function showGraph(tasksById) {
     explanation.textContent = id + ' 的 ' + count + ' 条连线 · 蓝色为前置依赖，绿色指向后续任务。';
     const task = tasksById.get(id);
     const card = taskCard(task, true);
+    const openExecution = element('button', '打开此节点的执行与交互', 'task-link');
+    openExecution.type = 'button';
+    openExecution.addEventListener('click', () => {
+      openResults('execution');
+      const item = byId('execution-' + id);
+      item.scrollIntoView({block: 'start'});
+      item.focus({preventScroll:true});
+    });
+    card.append(openExecution);
     const targets = rollbackTargets(task);
     if (targets.length) {
       if (vertical) explanation.textContent += ' 橙色虚线表示失败时可回退的编码。';
@@ -934,10 +954,6 @@ function showGraph(tasksById) {
         const change = rollbackScope(target, arrangement);
         info.append(element('p', target + ' · ' + tasksById.get(target).title + ' · 影响 ' + change.length + ' 项后续任务'));
       }
-      const openExecution = element('button', '前往执行与交互', 'task-link');
-      openExecution.type = 'button';
-      openExecution.addEventListener('click', () => openResults('execution'));
-      info.append(openExecution);
       card.append(info);
     }
     for (const [caption, here, other] of [
@@ -1050,7 +1066,8 @@ byId('report').addEventListener('click', () => {
   lines.push('', '## 实现阶段任务集', '');
   for (const task of plan.tasks) {
     lines.push('### ' + task.id + ' · ' + task.title, '',
-      '- 角色：' + task.role, '- 工作类型：' + taskStage(task), '- 关联需求：' + task.requirements.join('、'),
+      '- 角色：' + task.role, '- 执行 Agent：' + agentForTask(task).name, '- 工作类型：' + taskStage(task),
+      '- 关联需求：' + task.requirements.join('、'),
       '- 交付物：' + task.output, '- 验收：' + task.acceptance);
     if (result.pipeline) lines.push('- 设计来源：' + task.designs.join('、'));
     if (task.test) lines.push('- 测试层次：' + testLevelLabels[task.test.level],

@@ -1,3 +1,5 @@
+import { currentAgentOutput, validateAgentOutput } from './agents.mjs';
+
 export const stateLabels = {
   pending: '等待前置', ready: '可开始', running: '执行中', waiting: '等待人工补充',
   failed: '失败待处理', done: '已确认完成',
@@ -20,6 +22,10 @@ export function transition(id, action, note, runtime, arrangement) {
   if (typeof note !== 'string' || !note.trim() || note.length > 2000) throw new Error('请填写处理说明，完成时填写交付物位置或结果摘要');
   const next = {start: 'running', complete: 'done', ask: 'waiting', fail: 'failed', answer: 'running', retry: 'running'};
   const record = runtime[id] ?? {status: 'pending', attempts: 0, notes: []};
+  const verdict = currentAgentOutput(record)?.verdict;
+  if (action === 'complete' && verdict && verdict !== 'pass') {
+    throw new Error('评审尚未通过，请补充证据或记录返工');
+  }
   return {...record, status: next[action], attempts: record.attempts + Number(action === 'start' || action === 'retry'),
     notes: [...record.notes, {action, note: note.trim(), time: new Date().toISOString()}]};
 }
@@ -83,12 +89,22 @@ export function validateDiscussion(value, transcript) {
 
 export function validateRuntime(runtime, plan, arrangement) {
   if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) throw new Error('任务状态无效');
-  const ids = new Set(plan.tasks.map(task => task.id));
+  const tasks = new Map(plan.tasks.map(task => [task.id, task]));
   for (const [id, record] of Object.entries(runtime)) {
-    if (!ids.has(id) || !['pending','running','waiting','failed','done'].includes(record.status) ||
+    if (!tasks.has(id) || !['pending','running','waiting','failed','done'].includes(record.status) ||
         !Number.isInteger(record.attempts) || record.attempts < 0 || !Array.isArray(record.notes) ||
         record.notes.length > 1000 || record.notes.some(item => typeof item.note !== 'string' || item.note.length > 2000)) {
       throw new Error('导入的执行记录无效');
+    }
+    if (record.agentOutput !== undefined) {
+      const output = record.agentOutput;
+      if (!output || !Number.isInteger(output.attempt) || output.attempt < 1 || output.attempt > record.attempts ||
+          typeof output.model !== 'string' || !output.model.trim() || output.model.length > 150) {
+        throw new Error('导入的 Agent 产物记录无效');
+      }
+      validateAgentOutput(output, tasks.get(id));
+      const verdict = currentAgentOutput(record)?.verdict;
+      if (record.status === 'done' && verdict && verdict !== 'pass') throw new Error('已确认的评审必须通过');
     }
     if (record.status !== 'pending' && arrangement.dependencies[id].some(parent => runtime[parent]?.status !== 'done')) {
       throw new Error('执行记录与前置任务状态不一致');

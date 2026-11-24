@@ -1,5 +1,6 @@
 import {stateLabels, taskState, transition, rollbackScope, rollbackTask, rollbackTargets, validateDiscussion, validateRuntime} from './interaction.mjs';
 import {taskStage, testLevelLabels} from './workflow.mjs';
+import {agentForTask, approvedHandoffs, currentAgentOutput, validateAgentOutput} from './agents.mjs';
 import {stanceLabels, discussionParticipants, acknowledgedAll, startConsensusRound,
   registerStance, confirmConsensus, validateConsensus} from './consensus.mjs';
 
@@ -23,8 +24,13 @@ const button = (text, handler) => {
   return item;
 };
 
-export function createObservability({request, ready, adopt, getResult, getArrangement, download, isBusy, setBusy, renderCases, openPlan}) {
+const verdictLabels = {pass:'评审通过', changes_requested:'建议返工', needs_evidence:'需要补充证据'};
+
+export function createObservability({request, ready, adopt, getResult, getArrangement, download, isBusy, setBusy, renderCases, openPlan,
+  refreshExecution}) {
   let events = [], runtime = {}, discussion;
+  const pendingAgents = new Map();
+  const noteDrafts = new Map();
   const activity = document.getElementById('activity');
   const discussionResult = document.getElementById('discussion-result');
   const transcript = document.getElementById('transcript');
@@ -39,7 +45,7 @@ export function createObservability({request, ready, adopt, getResult, getArrang
     activity.replaceChildren(...events.slice(-100).reverse().map(event => {
       const row = node('li');
       row.append(node('time', new Date(event.time).toLocaleTimeString('zh-CN')),
-        node('strong', event.stage + ' · ' + event.status), node('span', event.message));
+        node('strong', [event.stage, event.agent, event.status].filter(Boolean).join(' · ')), node('span', event.message));
       return row;
     }));
     document.getElementById('event-count').textContent = events.length;
@@ -245,44 +251,136 @@ export function createObservability({request, ready, adopt, getResult, getArrang
     return form;
   }
 
+  async function callNodeAgent(task) {
+    const result = getResult();
+    const arrangement = getArrangement();
+    const state = taskState(task.id, runtime, arrangement);
+    if (isBusy() || pendingAgents.has(task.id) || pendingAgents.size >= arrangement.capacity ||
+        !['ready', 'running', 'failed'].includes(state)) return;
+    const token = {};
+    const name = agentForTask(task).name;
+    const note = noteDrafts.get(task.id)?.trim() || '';
+    const saved = runtime[task.id];
+    let started;
+    const latestFailure = saved?.notes.findLast(item => ['rollback','fail','invalidated'].includes(item.action))?.note;
+    const instruction = [latestFailure ? '上次问题：' + latestFailure : '', note]
+      .filter(Boolean).join('\n').slice(0, 2000);
+    try {
+      const handoffs = approvedHandoffs(arrangement.dependencies[task.id], runtime);
+      if (state !== 'running') {
+        runtime[task.id] = transition(task.id, state === 'ready' ? 'start' : 'retry',
+          '调用 ' + name, runtime, arrangement);
+      }
+      started = runtime[task.id];
+      pendingAgents.set(task.id, token);
+      log(task.id, '调用', '读取 ' + handoffs.length + ' 个前置任务的已确认交付物', {agent:name});
+      refreshExecution();
+      const design = result.pipeline?.design;
+      const designContext = design && {summary:design.summary, components:design.components.filter(part => task.designs?.includes(part.id))};
+      const testPlan = result.pipeline?.testPlan ?? result.testPlan;
+      const data = await request('task-agent', {plan:result.plan, taskId:task.id, handoffs, designContext,
+        spec:designContext ? undefined : result.spec, cases:testPlan?.cases.filter(item => item.task === task.id), note:instruction,
+        previous:saved?.agentOutput}, false);
+      if (getResult() !== result || runtime[task.id] !== started) return;
+      const output = validateAgentOutput(data.agentOutput, task);
+      runtime[task.id] = {...started, agentOutput:{...output, model:data.model, attempt:started.attempts}};
+      log(task.id, '待确认交付', output.summary, {agent:name, model:data.model, artifacts:output.artifacts.map(file => file.path)});
+      for (const message of data.validations ?? []) log(task.id, '校验修正', message, {agent:name});
+    } catch (error) {
+      if (getResult() === result && (!started || runtime[task.id] === started)) {
+        log(task.id, '调用失败', error.message, {agent:name});
+        token.error = error.message;
+      }
+    } finally {
+      if (pendingAgents.get(task.id) === token) pendingAgents.delete(task.id);
+      if (getResult() === result) {
+        if (token.error) agentErrors.set(task.id, token.error);
+        else agentErrors.delete(task.id);
+        refreshExecution();
+      }
+    }
+  }
+
+  const agentErrors = new Map();
   function renderExecution(container) {
     const {plan} = getResult();
     const arrangement = getArrangement();
     const tasks = new Map(plan.tasks.map(task => [task.id, task]));
-    container.append(node('p', '任务执行由负责人或外部 Agent 完成，在此提交进度与交付记录。完成前置任务后，后续任务才可开始。', 'hint'));
+    container.append(node('p', '节点通过 DeepSeek API 调用对应 Agent。负责人确认后，产物才会传给依赖它的节点。测试脚本由负责人在项目环境运行。', 'hint'));
+    const batch = button('并行调用就绪 Agent', async () => {
+      if (isBusy() || !await ready() || getResult()?.plan !== plan) return;
+      const available = arrangement.rounds.flat().filter(id => taskState(id, runtime, arrangement) === 'ready');
+      await Promise.all(available.slice(0, Math.max(0, arrangement.capacity - pendingAgents.size))
+        .map(id => callNodeAgent(tasks.get(id))));
+    });
+    batch.disabled = pendingAgents.size >= arrangement.capacity ||
+      !plan.tasks.some(task => taskState(task.id, runtime, arrangement) === 'ready');
+    container.append(batch);
     for (const task of plan.tasks) {
       const state = taskState(task.id, runtime, arrangement);
       const card = node('article', '', 'execution-card');
+      card.id = 'execution-' + task.id;
+      card.tabIndex = -1;
+      const agent = agentForTask(task);
+      const output = currentAgentOutput(runtime[task.id]);
+      const inFlight = pendingAgents.has(task.id);
       card.append(node('h3', task.id + ' · ' + task.title),
-        node('p', taskStage(task) + ' · ' + stateLabels[state] + ' · 尝试 ' + (runtime[task.id]?.attempts || 0) + ' 次', 'execution-status'),
+        node('p', agent.name + ' · ' + taskStage(task) + ' · ' + (inFlight ? 'Agent 生成中' : stateLabels[state]) +
+          ' · 尝试 ' + (runtime[task.id]?.attempts || 0) + ' 次', 'execution-status'),
+        node('p', agent.duty),
         node('p', '预期交付物：' + task.output),
         node('p', '前置：' + (arrangement.dependencies[task.id].map(id => id + ' ' + stateLabels[taskState(id, runtime, arrangement)]).join('、') || '无')));
       if (task.test) card.append(node('p', '测试目标：' + task.test.targets
         .map(id => id + ' ' + tasks.get(id).title).join('、')), ...renderCases(task));
       if (task.review) card.append(node('p', '评审对象：' + task.review.target + ' ' + tasks.get(task.review.target).title),
         node('p', task.acceptance));
+      if (output) {
+        card.append(node('p', (output.verdict ? verdictLabels[output.verdict] + ' · ' : '') +
+          'DeepSeek · ' + output.model + ' · ' + output.summary));
+        for (const file of output.artifacts) {
+          const detail = node('details', '', 'agent-artifact');
+          detail.append(node('summary', file.path), node('pre', file.content),
+            button('下载文件', () => download(file.path.split('/').at(-1), file.content, 'text/plain;charset=utf-8')));
+          card.append(detail);
+        }
+      }
       const list = node('ul', '', 'execution-history');
       for (const item of runtime[task.id]?.notes || []) list.append(node('li',
         new Date(item.time).toLocaleTimeString('zh-CN') + ' · ' + historyText(item)));
       if (list.childElementCount) card.append(list);
       const allowed = {ready:['start'],running:['ask','fail','complete'],waiting:['answer'],failed:['retry']}[state] || [];
       if (allowed.length) {
-        const label = node('label', '处理说明／交付物位置');
+        const label = node('label', task.role === '测试' ? '处理说明／实际测试结果' : '处理说明／交付物位置');
         const note = node('textarea');
         note.rows = 2;
         note.maxLength = 2000;
+        note.value = noteDrafts.get(task.id) ?? '';
+        note.addEventListener('input', () => noteDrafts.set(task.id, note.value));
         label.append(note);
         const actions = node('div', '', 'execution-actions');
         const error = node('p', '', 'error');
         error.setAttribute('role','alert');
-        for (const action of allowed) actions.append(button(actionLabels[action], () => {
+        if (allowed.some(action => ['start','complete','retry'].includes(action))) {
+          const invoke = button((output ? '重新调用 ' : '调用 ') + agent.name, async () => {
+            if (!isBusy() && await ready() && getResult()?.plan === plan) await callNodeAgent(task);
+          });
+          invoke.disabled = inFlight || pendingAgents.size >= arrangement.capacity;
+          actions.append(invoke);
+        }
+        for (const action of allowed) {
+          const control = button(actionLabels[action], () => {
           try {
-            runtime[task.id] = transition(task.id, action, note.value, runtime, arrangement);
-            log(task.id, actionLabels[action], note.value.trim());
-            container.replaceChildren();
-            renderExecution(container);
+            const evidence = note.value.trim() || (action === 'complete' && output && task.role !== '测试'
+              ? '已确认 ' + output.artifacts.map(file => file.path).join('、') : '');
+            runtime[task.id] = transition(task.id, action, evidence, runtime, arrangement);
+            log(task.id, actionLabels[action], evidence);
+            noteDrafts.delete(task.id);
+            refreshExecution();
           } catch (issue) { error.textContent = issue.message; }
-        }));
+          });
+          control.disabled = inFlight || (action === 'complete' && Boolean(output?.verdict && output.verdict !== 'pass'));
+          actions.append(control);
+        }
         const candidates = rollbackTargets(task);
         if (state === 'failed' && candidates.length) {
           const targetLabel = node('label', '回退目标');
@@ -299,8 +397,8 @@ export function createObservability({request, ready, adopt, getResult, getArrang
               runtime = update.runtime;
               log(task.id, '回退到 ' + id, note.value.trim() + '。需重新验证：' + update.affected.join('、'),
                 {rollbackTarget: id, affected: update.affected});
-              container.replaceChildren();
-              renderExecution(container);
+              noteDrafts.delete(task.id);
+              refreshExecution();
             } catch (issue) { error.textContent = issue.message; }
           });
           const showImpact = () => {
@@ -313,6 +411,7 @@ export function createObservability({request, ready, adopt, getResult, getArrang
           card.append(targetLabel, impact);
           actions.append(rollback);
         }
+        if (agentErrors.has(task.id)) error.textContent = agentErrors.get(task.id);
         card.append(label, actions, error);
       }
       container.append(card);
@@ -326,7 +425,8 @@ export function createObservability({request, ready, adopt, getResult, getArrang
     const lines = ['# ' + result.plan.project + ' · task.md', '', '任务执行记录由负责人填写。', ''];
     for (const task of result.plan.tasks) {
       lines.push('## ' + task.id + ' · ' + task.title, '',
-        '- 工种：' + task.role, '- 工作类型：' + taskStage(task), '- 需求：' + task.requirements.join('、'),
+        '- 工种：' + task.role, '- 执行 Agent：' + agentForTask(task).name,
+        '- 工作类型：' + taskStage(task), '- 需求：' + task.requirements.join('、'),
         '- 设计：' + (task.designs?.join('、') || '已有设计规格'),
         '- 输入：' + (task.inputs.join('、') || '设计规格'),
         '- 前置任务：' + (arrangement.dependencies[task.id].join('、') || '无'),
@@ -335,6 +435,9 @@ export function createObservability({request, ready, adopt, getResult, getArrang
       if (task.test) lines.push('- 测试层次：' + testLevelLabels[task.test.level],
         '- 验证及失败定位范围：' + task.test.targets.join('、'));
       if (task.review) lines.push('- 评审对象：' + task.review.target);
+      const output = currentAgentOutput(runtime[task.id]);
+      if (output) lines.push('- Agent 产物：' + output.artifacts.map(file => file.path).join('、'),
+        '- 模型：DeepSeek · ' + output.model);
       const testPlan = result.pipeline?.testPlan ?? result.testPlan;
       for (const test of testPlan?.cases.filter(test => test.task === task.id) ?? []) {
         lines.push('', '### ' + test.id + ' · ' + test.title, '',
@@ -351,8 +454,8 @@ export function createObservability({request, ready, adopt, getResult, getArrang
   });
   return {
     log, renderExecution,
-    reset() { events = []; runtime = {}; discussion = undefined; discussionResult.replaceChildren(); renderActivity(); },
-    resetRuntime() { runtime = {}; },
+    reset() { events = []; this.resetRuntime(); discussion = undefined; discussionResult.replaceChildren(); renderActivity(); },
+    resetRuntime() { runtime = {}; pendingAgents.clear(); agentErrors.clear(); noteDrafts.clear(); },
     snapshot() { return structuredClone({events, runtime, discussion}); },
     restore(value, plan, arrangement) {
       const restored = value || {events:[], runtime:{}};
@@ -365,6 +468,7 @@ export function createObservability({request, ready, adopt, getResult, getArrang
         validateDiscussion(restored.discussion, restored.discussion.transcript);
         validateConsensus(restored.discussion);
       }
+      this.resetRuntime();
       events = restored.events; runtime = restored.runtime; discussion = restored.discussion;
       if (discussion) transcript.value = discussion.transcript;
       renderActivity(); renderDiscussion();

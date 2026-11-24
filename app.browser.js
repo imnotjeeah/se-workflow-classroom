@@ -325,6 +325,60 @@
     }));
   }
 
+  // agents.mjs
+  var roles2 = {
+    "\u4EA7\u54C1\u8BBE\u8BA1": { name: "\u8BBE\u8BA1 Agent", duty: "\u68B3\u7406\u63A5\u53E3\u3001\u6570\u636E\u7ED3\u6784\u3001\u7EA6\u675F\u548C\u5F02\u5E38\uFF0C\u4EA4\u4ED8\u53EF\u4F9B\u4E0B\u6E38\u5B9E\u73B0\u7684\u5951\u7EA6\u6587\u6863\u3002" },
+    "\u524D\u7AEF": { name: "\u524D\u7AEF\u5F00\u53D1 Agent", duty: "\u6309\u8BBE\u8BA1\u548C\u524D\u7F6E\u5951\u7EA6\u7F16\u5199\u524D\u7AEF\u4EE3\u7801\uFF0C\u8986\u76D6\u4EA4\u4E92\u3001\u9519\u8BEF\u53CD\u9988\u548C\u8FB9\u754C\u3002" },
+    "\u540E\u7AEF": { name: "\u540E\u7AEF\u5F00\u53D1 Agent", duty: "\u6309\u8BBE\u8BA1\u548C\u524D\u7F6E\u5951\u7EA6\u7F16\u5199\u540E\u7AEF\u4EE3\u7801\uFF0C\u8986\u76D6\u6570\u636E\u6821\u9A8C\u3001\u63A5\u53E3\u548C\u5F02\u5E38\u884C\u4E3A\u3002" },
+    "\u6D4B\u8BD5": { name: "\u6D4B\u8BD5 Agent", duty: "\u6309\u6D4B\u8BD5\u5C42\u6B21\u548C\u5206\u914D\u7684\u7528\u4F8B\u7F16\u5199\u6D4B\u8BD5\u811A\u672C\u6216\u53EF\u6267\u884C\u6B65\u9AA4\uFF0C\u5E76\u5199\u51FA\u8FD0\u884C\u65B9\u6CD5\u3002" },
+    "\u8BC4\u5BA1": { name: "\u4EE3\u7801\u8BC4\u5BA1 Agent", duty: "\u8BFB\u53D6\u88AB\u8BC4\u5BA1\u7684\u4EE3\u7801\uFF0C\u6838\u5BF9\u9700\u6C42\u3001\u8BBE\u8BA1\u4E0E\u8FB9\u754C\uFF1B\u6309\u6587\u4EF6\u548C\u4F4D\u7F6E\u8BF4\u660E\u95EE\u9898\u53CA\u4FEE\u6539\u5EFA\u8BAE\u3002" }
+  };
+  var planningAgents = {
+    discussion: "\u8BA8\u8BBA\u63D0\u70BC Agent",
+    requirements: "\u9700\u6C42\u5206\u6790 Agent",
+    design: "\u8F6F\u4EF6\u67B6\u6784 Agent",
+    decompose: "PM Agent",
+    "test-plan": "\u6D4B\u8BD5\u8BBE\u8BA1 Agent"
+  };
+  function agentForTask(task) {
+    return roles2[task.kind === "contract" && ["\u524D\u7AEF", "\u540E\u7AEF"].includes(task.role) ? "\u4EA7\u54C1\u8BBE\u8BA1" : task.role];
+  }
+  function validateAgentOutput(value, task) {
+    if (typeof value?.summary !== "string" || !value.summary.trim() || value.summary.length > 1200 || !Array.isArray(value.artifacts) || !value.artifacts.length || value.artifacts.length > 4) {
+      throw new Error("Agent \u9700\u8FD4\u56DE\u6458\u8981\u548C 1 \u81F3 4 \u4E2A\u4EA4\u4ED8\u6587\u4EF6");
+    }
+    const paths = /* @__PURE__ */ new Set();
+    const artifacts = value.artifacts.map((file2) => {
+      if (typeof file2?.path !== "string" || file2.path.length > 120 || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*(\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$/.test(file2.path) || paths.has(file2.path) || typeof file2.content !== "string" || !file2.content.trim() || file2.content.length > 16e3) {
+        throw new Error("\u4EA4\u4ED8\u6587\u4EF6\u9700\u8981\u552F\u4E00\u7684\u76F8\u5BF9\u8DEF\u5F84\u548C\u5B8C\u6574\u5185\u5BB9");
+      }
+      paths.add(file2.path);
+      return { path: file2.path, content: file2.content };
+    });
+    if (artifacts.reduce((sum, file2) => sum + file2.content.length, 0) > 24e3) {
+      throw new Error("\u4EA4\u4ED8\u6587\u4EF6\u603B\u957F\u5EA6\u4E0D\u80FD\u8D85\u8FC7 24000 \u5B57");
+    }
+    const output = { summary: value.summary.trim(), artifacts };
+    if (task.role === "\u8BC4\u5BA1") {
+      if (!["pass", "changes_requested", "needs_evidence"].includes(value.verdict)) throw new Error("\u9700\u63D0\u4F9B\u6709\u6548\u7684\u8BC4\u5BA1\u7ED3\u8BBA");
+      output.verdict = value.verdict;
+    }
+    if (task.role === "\u6D4B\u8BD5" && value.verdict !== void 0) throw new Error("\u6D4B\u8BD5\u4EFB\u52A1\u53EA\u80FD\u4EA4\u4ED8\u811A\u672C\u6216\u6B65\u9AA4\uFF0C\u4E0D\u80FD\u58F0\u660E\u6D4B\u8BD5\u7ED3\u679C");
+    return output;
+  }
+  function currentAgentOutput(record) {
+    return record?.agentOutput && record.agentOutput.attempt === record.attempts ? record.agentOutput : void 0;
+  }
+  function approvedHandoffs(ids, runtime) {
+    return ids.map((id) => {
+      const record = runtime[id];
+      if (record?.status !== "done") throw new Error(id + " \u5C1A\u672A\u786E\u8BA4\u4EA4\u4ED8");
+      const delivered = currentAgentOutput(record);
+      const note = record.notes.findLast((item) => item.action === "complete")?.note ?? "";
+      return { id, note, artifacts: delivered?.artifacts ?? [] };
+    });
+  }
+
   // interaction.mjs
   var stateLabels = {
     pending: "\u7B49\u5F85\u524D\u7F6E",
@@ -354,6 +408,10 @@
     if (typeof note !== "string" || !note.trim() || note.length > 2e3) throw new Error("\u8BF7\u586B\u5199\u5904\u7406\u8BF4\u660E\uFF0C\u5B8C\u6210\u65F6\u586B\u5199\u4EA4\u4ED8\u7269\u4F4D\u7F6E\u6216\u7ED3\u679C\u6458\u8981");
     const next = { start: "running", complete: "done", ask: "waiting", fail: "failed", answer: "running", retry: "running" };
     const record = runtime[id] ?? { status: "pending", attempts: 0, notes: [] };
+    const verdict = currentAgentOutput(record)?.verdict;
+    if (action === "complete" && verdict && verdict !== "pass") {
+      throw new Error("\u8BC4\u5BA1\u5C1A\u672A\u901A\u8FC7\uFF0C\u8BF7\u8865\u5145\u8BC1\u636E\u6216\u8BB0\u5F55\u8FD4\u5DE5");
+    }
     return {
       ...record,
       status: next[action],
@@ -416,10 +474,19 @@
   }
   function validateRuntime(runtime, plan, arrangement2) {
     if (!runtime || typeof runtime !== "object" || Array.isArray(runtime)) throw new Error("\u4EFB\u52A1\u72B6\u6001\u65E0\u6548");
-    const ids = new Set(plan.tasks.map((task) => task.id));
+    const tasks = new Map(plan.tasks.map((task) => [task.id, task]));
     for (const [id, record] of Object.entries(runtime)) {
-      if (!ids.has(id) || !["pending", "running", "waiting", "failed", "done"].includes(record.status) || !Number.isInteger(record.attempts) || record.attempts < 0 || !Array.isArray(record.notes) || record.notes.length > 1e3 || record.notes.some((item) => typeof item.note !== "string" || item.note.length > 2e3)) {
+      if (!tasks.has(id) || !["pending", "running", "waiting", "failed", "done"].includes(record.status) || !Number.isInteger(record.attempts) || record.attempts < 0 || !Array.isArray(record.notes) || record.notes.length > 1e3 || record.notes.some((item) => typeof item.note !== "string" || item.note.length > 2e3)) {
         throw new Error("\u5BFC\u5165\u7684\u6267\u884C\u8BB0\u5F55\u65E0\u6548");
+      }
+      if (record.agentOutput !== void 0) {
+        const output = record.agentOutput;
+        if (!output || !Number.isInteger(output.attempt) || output.attempt < 1 || output.attempt > record.attempts || typeof output.model !== "string" || !output.model.trim() || output.model.length > 150) {
+          throw new Error("\u5BFC\u5165\u7684 Agent \u4EA7\u7269\u8BB0\u5F55\u65E0\u6548");
+        }
+        validateAgentOutput(output, tasks.get(id));
+        const verdict = currentAgentOutput(record)?.verdict;
+        if (record.status === "done" && verdict && verdict !== "pass") throw new Error("\u5DF2\u786E\u8BA4\u7684\u8BC4\u5BA1\u5FC5\u987B\u901A\u8FC7");
       }
       if (record.status !== "pending" && arrangement2.dependencies[id].some((parent) => runtime[parent]?.status !== "done")) {
         throw new Error("\u6267\u884C\u8BB0\u5F55\u4E0E\u524D\u7F6E\u4EFB\u52A1\u72B6\u6001\u4E0D\u4E00\u81F4");
@@ -550,8 +617,23 @@
     item.addEventListener("click", handler);
     return item;
   };
-  function createObservability({ request, ready, adopt, getResult, getArrangement, download, isBusy, setBusy, renderCases, openPlan }) {
+  var verdictLabels = { pass: "\u8BC4\u5BA1\u901A\u8FC7", changes_requested: "\u5EFA\u8BAE\u8FD4\u5DE5", needs_evidence: "\u9700\u8981\u8865\u5145\u8BC1\u636E" };
+  function createObservability({
+    request,
+    ready,
+    adopt,
+    getResult,
+    getArrangement,
+    download,
+    isBusy,
+    setBusy,
+    renderCases,
+    openPlan,
+    refreshExecution
+  }) {
     let events = [], runtime = {}, discussion;
+    const pendingAgents = /* @__PURE__ */ new Map();
+    const noteDrafts = /* @__PURE__ */ new Map();
     const activity = document.getElementById("activity");
     const discussionResult = document.getElementById("discussion-result");
     const transcript = document.getElementById("transcript");
@@ -566,7 +648,7 @@
         const row = node("li");
         row.append(
           node("time", new Date(event.time).toLocaleTimeString("zh-CN")),
-          node("strong", event.stage + " \xB7 " + event.status),
+          node("strong", [event.stage, event.agent, event.status].filter(Boolean).join(" \xB7 ")),
           node("span", event.message)
         );
         return row;
@@ -789,17 +871,90 @@
       );
       return form;
     }
+    async function callNodeAgent(task) {
+      const result2 = getResult();
+      const arrangement2 = getArrangement();
+      const state = taskState(task.id, runtime, arrangement2);
+      if (isBusy() || pendingAgents.has(task.id) || pendingAgents.size >= arrangement2.capacity || !["ready", "running", "failed"].includes(state)) return;
+      const token = {};
+      const name = agentForTask(task).name;
+      const note = noteDrafts.get(task.id)?.trim() || "";
+      const saved = runtime[task.id];
+      let started;
+      const latestFailure = saved?.notes.findLast((item) => ["rollback", "fail", "invalidated"].includes(item.action))?.note;
+      const instruction = [latestFailure ? "\u4E0A\u6B21\u95EE\u9898\uFF1A" + latestFailure : "", note].filter(Boolean).join("\n").slice(0, 2e3);
+      try {
+        const handoffs = approvedHandoffs(arrangement2.dependencies[task.id], runtime);
+        if (state !== "running") {
+          runtime[task.id] = transition(
+            task.id,
+            state === "ready" ? "start" : "retry",
+            "\u8C03\u7528 " + name,
+            runtime,
+            arrangement2
+          );
+        }
+        started = runtime[task.id];
+        pendingAgents.set(task.id, token);
+        log(task.id, "\u8C03\u7528", "\u8BFB\u53D6 " + handoffs.length + " \u4E2A\u524D\u7F6E\u4EFB\u52A1\u7684\u5DF2\u786E\u8BA4\u4EA4\u4ED8\u7269", { agent: name });
+        refreshExecution();
+        const design = result2.pipeline?.design;
+        const designContext = design && { summary: design.summary, components: design.components.filter((part) => task.designs?.includes(part.id)) };
+        const testPlan = result2.pipeline?.testPlan ?? result2.testPlan;
+        const data = await request("task-agent", {
+          plan: result2.plan,
+          taskId: task.id,
+          handoffs,
+          designContext,
+          spec: designContext ? void 0 : result2.spec,
+          cases: testPlan?.cases.filter((item) => item.task === task.id),
+          note: instruction,
+          previous: saved?.agentOutput
+        }, false);
+        if (getResult() !== result2 || runtime[task.id] !== started) return;
+        const output = validateAgentOutput(data.agentOutput, task);
+        runtime[task.id] = { ...started, agentOutput: { ...output, model: data.model, attempt: started.attempts } };
+        log(task.id, "\u5F85\u786E\u8BA4\u4EA4\u4ED8", output.summary, { agent: name, model: data.model, artifacts: output.artifacts.map((file2) => file2.path) });
+        for (const message of data.validations ?? []) log(task.id, "\u6821\u9A8C\u4FEE\u6B63", message, { agent: name });
+      } catch (error) {
+        if (getResult() === result2 && (!started || runtime[task.id] === started)) {
+          log(task.id, "\u8C03\u7528\u5931\u8D25", error.message, { agent: name });
+          token.error = error.message;
+        }
+      } finally {
+        if (pendingAgents.get(task.id) === token) pendingAgents.delete(task.id);
+        if (getResult() === result2) {
+          if (token.error) agentErrors.set(task.id, token.error);
+          else agentErrors.delete(task.id);
+          refreshExecution();
+        }
+      }
+    }
+    const agentErrors = /* @__PURE__ */ new Map();
     function renderExecution(container) {
       const { plan } = getResult();
       const arrangement2 = getArrangement();
       const tasks = new Map(plan.tasks.map((task) => [task.id, task]));
-      container.append(node("p", "\u4EFB\u52A1\u6267\u884C\u7531\u8D1F\u8D23\u4EBA\u6216\u5916\u90E8 Agent \u5B8C\u6210\uFF0C\u5728\u6B64\u63D0\u4EA4\u8FDB\u5EA6\u4E0E\u4EA4\u4ED8\u8BB0\u5F55\u3002\u5B8C\u6210\u524D\u7F6E\u4EFB\u52A1\u540E\uFF0C\u540E\u7EED\u4EFB\u52A1\u624D\u53EF\u5F00\u59CB\u3002", "hint"));
+      container.append(node("p", "\u8282\u70B9\u901A\u8FC7 DeepSeek API \u8C03\u7528\u5BF9\u5E94 Agent\u3002\u8D1F\u8D23\u4EBA\u786E\u8BA4\u540E\uFF0C\u4EA7\u7269\u624D\u4F1A\u4F20\u7ED9\u4F9D\u8D56\u5B83\u7684\u8282\u70B9\u3002\u6D4B\u8BD5\u811A\u672C\u7531\u8D1F\u8D23\u4EBA\u5728\u9879\u76EE\u73AF\u5883\u8FD0\u884C\u3002", "hint"));
+      const batch = button("\u5E76\u884C\u8C03\u7528\u5C31\u7EEA Agent", async () => {
+        if (isBusy() || !await ready() || getResult()?.plan !== plan) return;
+        const available = arrangement2.rounds.flat().filter((id) => taskState(id, runtime, arrangement2) === "ready");
+        await Promise.all(available.slice(0, Math.max(0, arrangement2.capacity - pendingAgents.size)).map((id) => callNodeAgent(tasks.get(id))));
+      });
+      batch.disabled = pendingAgents.size >= arrangement2.capacity || !plan.tasks.some((task) => taskState(task.id, runtime, arrangement2) === "ready");
+      container.append(batch);
       for (const task of plan.tasks) {
         const state = taskState(task.id, runtime, arrangement2);
         const card = node("article", "", "execution-card");
+        card.id = "execution-" + task.id;
+        card.tabIndex = -1;
+        const agent = agentForTask(task);
+        const output = currentAgentOutput(runtime[task.id]);
+        const inFlight = pendingAgents.has(task.id);
         card.append(
           node("h3", task.id + " \xB7 " + task.title),
-          node("p", taskStage(task) + " \xB7 " + stateLabels[state] + " \xB7 \u5C1D\u8BD5 " + (runtime[task.id]?.attempts || 0) + " \u6B21", "execution-status"),
+          node("p", agent.name + " \xB7 " + taskStage(task) + " \xB7 " + (inFlight ? "Agent \u751F\u6210\u4E2D" : stateLabels[state]) + " \xB7 \u5C1D\u8BD5 " + (runtime[task.id]?.attempts || 0) + " \u6B21", "execution-status"),
+          node("p", agent.duty),
           node("p", "\u9884\u671F\u4EA4\u4ED8\u7269\uFF1A" + task.output),
           node("p", "\u524D\u7F6E\uFF1A" + (arrangement2.dependencies[task.id].map((id) => id + " " + stateLabels[taskState(id, runtime, arrangement2)]).join("\u3001") || "\u65E0"))
         );
@@ -808,6 +963,18 @@
           node("p", "\u8BC4\u5BA1\u5BF9\u8C61\uFF1A" + task.review.target + " " + tasks.get(task.review.target).title),
           node("p", task.acceptance)
         );
+        if (output) {
+          card.append(node("p", (output.verdict ? verdictLabels[output.verdict] + " \xB7 " : "") + "DeepSeek \xB7 " + output.model + " \xB7 " + output.summary));
+          for (const file2 of output.artifacts) {
+            const detail = node("details", "", "agent-artifact");
+            detail.append(
+              node("summary", file2.path),
+              node("pre", file2.content),
+              button("\u4E0B\u8F7D\u6587\u4EF6", () => download(file2.path.split("/").at(-1), file2.content, "text/plain;charset=utf-8"))
+            );
+            card.append(detail);
+          }
+        }
         const list = node("ul", "", "execution-history");
         for (const item of runtime[task.id]?.notes || []) list.append(node(
           "li",
@@ -816,24 +983,38 @@
         if (list.childElementCount) card.append(list);
         const allowed = { ready: ["start"], running: ["ask", "fail", "complete"], waiting: ["answer"], failed: ["retry"] }[state] || [];
         if (allowed.length) {
-          const label = node("label", "\u5904\u7406\u8BF4\u660E\uFF0F\u4EA4\u4ED8\u7269\u4F4D\u7F6E");
+          const label = node("label", task.role === "\u6D4B\u8BD5" ? "\u5904\u7406\u8BF4\u660E\uFF0F\u5B9E\u9645\u6D4B\u8BD5\u7ED3\u679C" : "\u5904\u7406\u8BF4\u660E\uFF0F\u4EA4\u4ED8\u7269\u4F4D\u7F6E");
           const note = node("textarea");
           note.rows = 2;
           note.maxLength = 2e3;
+          note.value = noteDrafts.get(task.id) ?? "";
+          note.addEventListener("input", () => noteDrafts.set(task.id, note.value));
           label.append(note);
           const actions = node("div", "", "execution-actions");
           const error = node("p", "", "error");
           error.setAttribute("role", "alert");
-          for (const action of allowed) actions.append(button(actionLabels[action], () => {
-            try {
-              runtime[task.id] = transition(task.id, action, note.value, runtime, arrangement2);
-              log(task.id, actionLabels[action], note.value.trim());
-              container.replaceChildren();
-              renderExecution(container);
-            } catch (issue) {
-              error.textContent = issue.message;
-            }
-          }));
+          if (allowed.some((action) => ["start", "complete", "retry"].includes(action))) {
+            const invoke = button((output ? "\u91CD\u65B0\u8C03\u7528 " : "\u8C03\u7528 ") + agent.name, async () => {
+              if (!isBusy() && await ready() && getResult()?.plan === plan) await callNodeAgent(task);
+            });
+            invoke.disabled = inFlight || pendingAgents.size >= arrangement2.capacity;
+            actions.append(invoke);
+          }
+          for (const action of allowed) {
+            const control = button(actionLabels[action], () => {
+              try {
+                const evidence = note.value.trim() || (action === "complete" && output && task.role !== "\u6D4B\u8BD5" ? "\u5DF2\u786E\u8BA4 " + output.artifacts.map((file2) => file2.path).join("\u3001") : "");
+                runtime[task.id] = transition(task.id, action, evidence, runtime, arrangement2);
+                log(task.id, actionLabels[action], evidence);
+                noteDrafts.delete(task.id);
+                refreshExecution();
+              } catch (issue) {
+                error.textContent = issue.message;
+              }
+            });
+            control.disabled = inFlight || action === "complete" && Boolean(output?.verdict && output.verdict !== "pass");
+            actions.append(control);
+          }
           const candidates = rollbackTargets(task);
           if (state === "failed" && candidates.length) {
             const targetLabel = node("label", "\u56DE\u9000\u76EE\u6807");
@@ -854,8 +1035,8 @@
                   note.value.trim() + "\u3002\u9700\u91CD\u65B0\u9A8C\u8BC1\uFF1A" + update.affected.join("\u3001"),
                   { rollbackTarget: id, affected: update.affected }
                 );
-                container.replaceChildren();
-                renderExecution(container);
+                noteDrafts.delete(task.id);
+                refreshExecution();
               } catch (issue) {
                 error.textContent = issue.message;
               }
@@ -869,6 +1050,7 @@
             card.append(targetLabel, impact);
             actions.append(rollback);
           }
+          if (agentErrors.has(task.id)) error.textContent = agentErrors.get(task.id);
           card.append(label, actions, error);
         }
         container.append(card);
@@ -884,6 +1066,7 @@
           "## " + task.id + " \xB7 " + task.title,
           "",
           "- \u5DE5\u79CD\uFF1A" + task.role,
+          "- \u6267\u884C Agent\uFF1A" + agentForTask(task).name,
           "- \u5DE5\u4F5C\u7C7B\u578B\uFF1A" + taskStage(task),
           "- \u9700\u6C42\uFF1A" + task.requirements.join("\u3001"),
           "- \u8BBE\u8BA1\uFF1A" + (task.designs?.join("\u3001") || "\u5DF2\u6709\u8BBE\u8BA1\u89C4\u683C"),
@@ -899,6 +1082,11 @@
           "- \u9A8C\u8BC1\u53CA\u5931\u8D25\u5B9A\u4F4D\u8303\u56F4\uFF1A" + task.test.targets.join("\u3001")
         );
         if (task.review) lines.push("- \u8BC4\u5BA1\u5BF9\u8C61\uFF1A" + task.review.target);
+        const output = currentAgentOutput(runtime[task.id]);
+        if (output) lines.push(
+          "- Agent \u4EA7\u7269\uFF1A" + output.artifacts.map((file2) => file2.path).join("\u3001"),
+          "- \u6A21\u578B\uFF1ADeepSeek \xB7 " + output.model
+        );
         const testPlan = result2.pipeline?.testPlan ?? result2.testPlan;
         for (const test of testPlan?.cases.filter((test2) => test2.task === task.id) ?? []) {
           lines.push(
@@ -926,13 +1114,16 @@
       renderExecution,
       reset() {
         events = [];
-        runtime = {};
+        this.resetRuntime();
         discussion = void 0;
         discussionResult.replaceChildren();
         renderActivity();
       },
       resetRuntime() {
         runtime = {};
+        pendingAgents.clear();
+        agentErrors.clear();
+        noteDrafts.clear();
       },
       snapshot() {
         return structuredClone({ events, runtime, discussion });
@@ -946,6 +1137,7 @@
           validateDiscussion(restored.discussion, restored.discussion.transcript);
           validateConsensus(restored.discussion);
         }
+        this.resetRuntime();
         events = restored.events;
         runtime = restored.runtime;
         discussion = restored.discussion;
@@ -1006,6 +1198,9 @@
     setBusy: lock,
     renderCases: taskCases,
     openPlan: () => selectWorkspace(false, true),
+    refreshExecution: () => {
+      if (result && active === "execution") render();
+    },
     adopt: (text2) => {
       inputMode.value = "idea";
       spec.value = text2;
@@ -1157,7 +1352,7 @@
     notice.classList.toggle("busy", value);
     run.textContent = value ? "\u6B63\u5728\u751F\u6210\u2026" : runLabel();
   }
-  async function requestStage(endpoint, body) {
+  async function requestStage(endpoint, body, track = true) {
     const labels = {
       discussion: "\u8BA8\u8BBA\u63D0\u70BC",
       requirements: "\u60F3\u6CD5 \u2192 \u9700\u6C42\u89C4\u683C",
@@ -1167,7 +1362,8 @@
     };
     const label = labels[endpoint] || endpoint;
     const started = performance.now();
-    monitor.log(label, "\u5F00\u59CB", "\u5DF2\u63D0\u4EA4 DeepSeek API \u8BF7\u6C42");
+    const agent = planningAgents[endpoint];
+    if (track) monitor.log(label, "\u5F00\u59CB", "\u5DF2\u63D0\u4EA4 DeepSeek API \u8BF7\u6C42", { agent });
     try {
       const response = await fetch(apiBase + "/api/" + endpoint, {
         method: "POST",
@@ -1176,16 +1372,18 @@
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
-      monitor.log(
-        label,
-        "\u5B8C\u6210",
-        "\u4EA7\u7269\u901A\u8FC7\u7ED3\u6784\u6821\u9A8C\uFF0C\u8017\u65F6 " + ((performance.now() - started) / 1e3).toFixed(1) + " \u79D2",
-        { model: data.model, validations: data.validations || [] }
-      );
-      for (const message of data.validations || []) monitor.log(label, "\u6821\u9A8C\u4FEE\u6B63", message);
+      if (track) {
+        monitor.log(
+          label,
+          "\u5B8C\u6210",
+          "\u4EA7\u7269\u901A\u8FC7\u7ED3\u6784\u6821\u9A8C\uFF0C\u8017\u65F6 " + ((performance.now() - started) / 1e3).toFixed(1) + " \u79D2",
+          { agent, model: data.model, validations: data.validations || [] }
+        );
+        for (const message of data.validations || []) monitor.log(label, "\u6821\u9A8C\u4FEE\u6B63", message, { agent });
+      }
       return data;
     } catch (error) {
-      monitor.log(label, "\u5931\u8D25", error.message);
+      if (track) monitor.log(label, "\u5931\u8D25", error.message, { agent });
       throw error;
     }
   }
@@ -1402,12 +1600,21 @@
       feedback: Boolean(result),
       tests: Boolean(pipeline?.testPlan)
     };
+    const owners = {
+      idea: "\u53C2\u4F1A\u8005 / \u8D1F\u8D23\u4EBA",
+      requirements: planningAgents.requirements,
+      design: planningAgents.design,
+      tests: planningAgents["test-plan"],
+      schedule: planningAgents.decompose + " / \u7F16\u6392\u5668",
+      feedback: "\u7F16\u6392\u5668"
+    };
     byId("chain-steps").replaceChildren(...steps.map(([id, label]) => {
       const step = element("button", label);
       step.type = "button";
       step.disabled = !available[id];
       step.setAttribute("aria-pressed", String(id === chainView));
       step.append(element("span", id === runningStage ? "\u751F\u6210\u4E2D" : available[id] ? id === "idea" ? "\u539F\u59CB\u8F93\u5165" : "\u53EF\u67E5\u770B" : "\u5F85\u751F\u6210"));
+      step.append(element("span", owners[id], "chain-owner"));
       step.addEventListener("click", () => openChain(id));
       return step;
     }));
@@ -1533,12 +1740,15 @@
       if (task.role === "\u8BC4\u5BA1") card.style.borderLeft = "4px solid #23836a";
     }
     const stage = taskStage(task);
+    const agent = agentForTask(task);
     card.append(
       element("span", task.id + " \xB7 " + (stage === "\u7F16\u7801" ? "\u7F16\u7801 / " + task.role : stage) + " \xB7 " + task.requirements.join("\u3001"), "task-meta"),
-      element("strong", task.title)
+      element("strong", task.title),
+      element("span", agent.name, "task-agent")
     );
     if (full) {
       card.append(
+        element("p", "\u804C\u8D23\uFF1A" + agent.duty),
         element("p", "\u58F0\u660E\u8F93\u5165\uFF1A" + (task.inputs.join("\u3001") || "Design Spec")),
         element("p", "\u4EA4\u4ED8\uFF1A" + task.output),
         element("p", "\u9A8C\u6536\uFF1A" + task.acceptance)
@@ -1785,13 +1995,13 @@ export const executeCoreTask = async (req: Request, res: Response) => {
         });
       });
       const rows = [];
-      const belowCards = Math.max(...columns.map((column) => acrossEnd(column.lastElementChild.getBoundingClientRect()))) + 18;
+      const laneStart = Math.max(...columns.map((column) => acrossEnd((vertical ? column : column.lastElementChild).getBoundingClientRect()))) + 18;
       longRoutes.sort((a, b) => a.start.batch - b.start.batch || a.end.batch - b.end.batch);
       for (const route of longRoutes) {
         let row = rows.findIndex((end) => end < route.start.batch);
         if (row === -1) row = rows.length;
         rows[row] = route.end.batch;
-        route.floor = belowCards + row * 11;
+        route.floor = laneStart + row * 11;
       }
       const returns = vertical && selected ? rollbackTargets(tasksById.get(selected)) : [];
       graph.style[vertical ? "paddingRight" : "paddingBottom"] = 26 + (rows.length + returns.length) * 11 + "px";
@@ -1830,7 +2040,7 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       returns.forEach((id, index) => {
         const from = nodes.get(selected);
         const to = nodes.get(id);
-        const lane = belowCards + (rows.length + index) * 11;
+        const lane = laneStart + (rows.length + index) * 11;
         const leave = endOf(columns[from.batch].getBoundingClientRect()) + 16 + index * 4;
         const enter = endOf(columns[to.batch].getBoundingClientRect()) + 19;
         drawRoute([
@@ -1859,6 +2069,15 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       explanation.textContent = id + " \u7684 " + count + " \u6761\u8FDE\u7EBF \xB7 \u84DD\u8272\u4E3A\u524D\u7F6E\u4F9D\u8D56\uFF0C\u7EFF\u8272\u6307\u5411\u540E\u7EED\u4EFB\u52A1\u3002";
       const task = tasksById.get(id);
       const card = taskCard(task, true);
+      const openExecution = element("button", "\u6253\u5F00\u6B64\u8282\u70B9\u7684\u6267\u884C\u4E0E\u4EA4\u4E92", "task-link");
+      openExecution.type = "button";
+      openExecution.addEventListener("click", () => {
+        openResults("execution");
+        const item = byId("execution-" + id);
+        item.scrollIntoView({ block: "start" });
+        item.focus({ preventScroll: true });
+      });
+      card.append(openExecution);
       const targets = rollbackTargets(task);
       if (targets.length) {
         if (vertical) explanation.textContent += " \u6A59\u8272\u865A\u7EBF\u8868\u793A\u5931\u8D25\u65F6\u53EF\u56DE\u9000\u7684\u7F16\u7801\u3002";
@@ -1868,10 +2087,6 @@ export const executeCoreTask = async (req: Request, res: Response) => {
           const change = rollbackScope(target, arrangement);
           info.append(element("p", target + " \xB7 " + tasksById.get(target).title + " \xB7 \u5F71\u54CD " + change.length + " \u9879\u540E\u7EED\u4EFB\u52A1"));
         }
-        const openExecution = element("button", "\u524D\u5F80\u6267\u884C\u4E0E\u4EA4\u4E92", "task-link");
-        openExecution.type = "button";
-        openExecution.addEventListener("click", () => openResults("execution"));
-        info.append(openExecution);
         card.append(info);
       }
       for (const [caption, here, other] of [
@@ -1994,6 +2209,7 @@ export const executeCoreTask = async (req: Request, res: Response) => {
         "### " + task.id + " \xB7 " + task.title,
         "",
         "- \u89D2\u8272\uFF1A" + task.role,
+        "- \u6267\u884C Agent\uFF1A" + agentForTask(task).name,
         "- \u5DE5\u4F5C\u7C7B\u578B\uFF1A" + taskStage(task),
         "- \u5173\u8054\u9700\u6C42\uFF1A" + task.requirements.join("\u3001"),
         "- \u4EA4\u4ED8\u7269\uFF1A" + task.output,
