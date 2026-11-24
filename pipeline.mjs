@@ -6,8 +6,8 @@ function text(value, limit = 500) {
   return typeof value === 'string' && value.trim() && value.length <= limit;
 }
 
-function entries(list, prefix, label) {
-  check(Array.isArray(list) && list.length > 0 && list.length <= 12, label + '需要 1 至 12 个条目');
+function entries(list, prefix, label, limit = 12) {
+  check(Array.isArray(list) && list.length > 0 && list.length <= limit, label + '需要 1 至 ' + limit + ' 个条目');
   const ids = new Set();
   for (const item of list) {
     check(typeof item?.id === 'string' && new RegExp('^' + prefix + '[1-9]\\d*$').test(item.id) &&
@@ -62,9 +62,38 @@ export function validateTaskLinks(plan, design) {
     '每项设计都需要开发任务和验收测试');
 }
 
+export function assignTestCases(design, plan) {
+  const testers = plan.tasks.filter(task => task.role === '测试');
+  const candidates = testers.flatMap(task => design.components
+    .filter(part => task.designs.includes(part.id))
+    .map(part => ({
+      task: task.id, design: part.id,
+      requirements: part.requirements.filter(id => task.requirements.includes(id)),
+    }))
+    .sort((a, b) => b.requirements.length - a.requirements.length));
+  const selected = testers.map(task => candidates.find(candidate => candidate.task === task.id));
+  const coveredRequirements = new Set(selected.flatMap(item => item.requirements));
+  const coveredDesigns = new Set(selected.map(item => item.design));
+  for (const item of candidates) {
+    if (coveredDesigns.has(item.design) && item.requirements.every(id => coveredRequirements.has(id))) continue;
+    selected.push(item);
+    coveredDesigns.add(item.design);
+    item.requirements.forEach(id => coveredRequirements.add(id));
+  }
+  return selected.map((item, index) => ({id: 'TC' + (index + 1), ...item}));
+}
+
+export function bindTestCases(value, assignments) {
+  entries(value?.cases, 'TC', '测试方案', 48);
+  const given = new Map(value.cases.map(item => [item.id, item]));
+  check(given.size === assignments.length && assignments.every(item => given.has(item.id)),
+    '测试用例编号必须与分配清单完全一致');
+  return {strategy: value.strategy, cases: assignments.map(item => ({...given.get(item.id), ...item}))};
+}
+
 export function validateTestPlan(value, design, plan) {
   check(text(value?.strategy, 1000), '测试方案缺少范围与方法');
-  entries(value.cases, 'TC', '测试方案');
+  entries(value.cases, 'TC', '测试方案', 48);
   const designById = new Map(design.components.map(part => [part.id, part]));
   const testers = new Map(plan.tasks.filter(task => task.role === '测试').map(task => [task.id, task]));
   const coveredRequirements = new Set();

@@ -78,6 +78,8 @@
 
   // workflow.mjs
   var roles = ["\u4EA7\u54C1\u8BBE\u8BA1", "\u524D\u7AEF", "\u540E\u7AEF", "\u6D4B\u8BD5"];
+  var testLevelLabels = { unit: "\u5355\u5143\u6D4B\u8BD5", integration: "\u96C6\u6210\u6D4B\u8BD5", e2e: "\u7AEF\u5230\u7AEF\u9A8C\u6536" };
+  var developmentRoles = /* @__PURE__ */ new Set(["\u524D\u7AEF", "\u540E\u7AEF"]);
   function check(condition, message) {
     if (!condition) throw new Error(message);
   }
@@ -93,11 +95,11 @@
       check(/^R\d+$/.test(req.id) && !requirements.has(req.id) && present(req.text) && present(req.acceptance), "\u9700\u6C42\u7F16\u53F7\u91CD\u590D\u3001\u65E0\u6548\u6216\u7F3A\u5C11\u9A8C\u6536\u6807\u51C6");
       requirements.add(req.id);
     }
-    const ids = /* @__PURE__ */ new Set();
+    const tasksById = /* @__PURE__ */ new Map();
     const covered = /* @__PURE__ */ new Set();
     const tested = /* @__PURE__ */ new Set();
     for (const task of plan.tasks) {
-      check(/^T\d+$/.test(task.id) && !ids.has(task.id), "\u4EFB\u52A1\u7F16\u53F7\u91CD\u590D\u6216\u65E0\u6548");
+      check(/^T\d+$/.test(task.id) && !tasksById.has(task.id), "\u4EFB\u52A1\u7F16\u53F7\u91CD\u590D\u6216\u65E0\u6548");
       check(present(task.title) && present(task.acceptance) && roles.includes(task.role), task.id + " \u7F3A\u5C11\u4EFB\u52A1\u540D\u79F0\u3001\u89D2\u8272\u6216\u9A8C\u6536\u6807\u51C6");
       check(Array.isArray(task.requirements) && task.requirements.length > 0 && task.requirements.every((id) => requirements.has(id)), task.id + " \u5F15\u7528\u4E86\u672A\u77E5\u9700\u6C42");
       for (const id of task.requirements) {
@@ -105,7 +107,16 @@
         else covered.add(id);
       }
       check(Array.isArray(task.inputs) && task.inputs.every(present) && present(task.output), task.id + " \u7684\u8F93\u5165\u6216\u4EA4\u4ED8\u7269\u65E0\u6548");
-      ids.add(task.id);
+      tasksById.set(task.id, task);
+    }
+    for (const task of plan.tasks) {
+      if (task.test === void 0) continue;
+      const { level, targets } = task.test ?? {};
+      check(task.role === "\u6D4B\u8BD5" && Object.hasOwn(testLevelLabels, level) && Array.isArray(targets) && new Set(targets).size === targets.length && targets.length >= (level === "integration" ? 2 : 1) && (level !== "unit" || targets.length === 1), task.id + " \u7684\u6D4B\u8BD5\u5C42\u6B21\u6216\u5B9E\u73B0\u76EE\u6807\u65E0\u6548");
+      check(targets.every((id) => {
+        const target = tasksById.get(id);
+        return developmentRoles.has(target?.role) && task.inputs.includes(target.output);
+      }), task.id + " \u5FC5\u987B\u4F9D\u8D56\u5176\u6D4B\u8BD5\u76EE\u6807\u7684\u5B9E\u73B0\u4EA4\u4ED8\u7269");
     }
     check([...requirements].every((id) => covered.has(id) && tested.has(id)), "\u6BCF\u6761\u9700\u6C42\u90FD\u5E94\u6709\u975E\u6D4B\u8BD5\u4EFB\u52A1\u548C\u6D4B\u8BD5\u4EFB\u52A1\u8986\u76D6");
   }
@@ -122,7 +133,7 @@
     for (const task of plan.tasks) {
       dependencies[task.id] = [];
       const inputs = new Set(task.inputs);
-      if (task.role === "\u6D4B\u8BD5") {
+      if (task.role === "\u6D4B\u8BD5" && !task.test) {
         for (const implementation of plan.tasks) {
           if (implementation.role !== "\u6D4B\u8BD5" && implementation.requirements.some((id) => task.requirements.includes(id))) {
             inputs.add(implementation.output);
@@ -156,8 +167,8 @@
   function text(value, limit = 500) {
     return typeof value === "string" && value.trim() && value.length <= limit;
   }
-  function entries(list, prefix, label) {
-    check2(Array.isArray(list) && list.length > 0 && list.length <= 12, label + "\u9700\u8981 1 \u81F3 12 \u4E2A\u6761\u76EE");
+  function entries(list, prefix, label, limit = 12) {
+    check2(Array.isArray(list) && list.length > 0 && list.length <= limit, label + "\u9700\u8981 1 \u81F3 " + limit + " \u4E2A\u6761\u76EE");
     const ids = /* @__PURE__ */ new Set();
     for (const item of list) {
       check2(typeof item?.id === "string" && new RegExp("^" + prefix + "[1-9]\\d*$").test(item.id) && !ids.has(item.id), label + "\u6761\u76EE\u7F16\u53F7\u65E0\u6548\u6216\u91CD\u590D");
@@ -213,7 +224,7 @@
   }
   function validateTestPlan(value, design, plan) {
     check2(text(value?.strategy, 1e3), "\u6D4B\u8BD5\u65B9\u6848\u7F3A\u5C11\u8303\u56F4\u4E0E\u65B9\u6CD5");
-    entries(value.cases, "TC", "\u6D4B\u8BD5\u65B9\u6848");
+    entries(value.cases, "TC", "\u6D4B\u8BD5\u65B9\u6848", 48);
     const designById = new Map(design.components.map((part) => [part.id, part]));
     const testers = new Map(plan.tasks.filter((task) => task.role === "\u6D4B\u8BD5").map((task) => [task.id, task]));
     const coveredRequirements = /* @__PURE__ */ new Set();
@@ -318,6 +329,42 @@
       notes: [...record.notes, { action, note: note.trim(), time: (/* @__PURE__ */ new Date()).toISOString() }]
     };
   }
+  function rollbackScope(target, arrangement2) {
+    const affected = /* @__PURE__ */ new Set([target]);
+    for (const id of arrangement2.rounds.flat()) {
+      if (arrangement2.dependencies[id].some((parent) => affected.has(parent))) affected.add(id);
+    }
+    return [...affected].slice(1);
+  }
+  function rollbackTask(test, target, note, runtime, arrangement2) {
+    if (!test.test?.targets.includes(target) || !arrangement2.dependencies[test.id]?.includes(target)) {
+      throw new Error("\u8BF7\u9009\u62E9\u8BE5\u6D4B\u8BD5\u5B9E\u9645\u4F9D\u8D56\u7684\u5B9E\u73B0\u4EFB\u52A1");
+    }
+    if (runtime[test.id]?.status !== "failed" || runtime[target]?.status !== "done") {
+      throw new Error("\u6D4B\u8BD5\u987B\u5904\u4E8E\u5931\u8D25\u5F85\u5904\u7406\u72B6\u6001\uFF0C\u4E14\u5B9E\u73B0\u4EFB\u52A1\u5DF2\u4EA4\u4ED8");
+    }
+    if (typeof note !== "string" || !note.trim() || note.length > 2e3) {
+      throw new Error("\u8BF7\u586B\u5199\u5B9A\u4F4D\u4F9D\u636E\u6216\u5931\u8D25\u73B0\u8C61");
+    }
+    const affected = rollbackScope(target, arrangement2);
+    const updated = { ...runtime };
+    const time = (/* @__PURE__ */ new Date()).toISOString();
+    function mark(id, status, action) {
+      const previous = runtime[id] ?? { attempts: 0, notes: [] };
+      updated[id] = { ...previous, status, notes: [...previous.notes, {
+        time,
+        action,
+        note: note.trim(),
+        test: test.id,
+        target
+      }] };
+    }
+    mark(target, "failed", "rollback");
+    for (const id of affected) {
+      if (runtime[id]) mark(id, "pending", "invalidated");
+    }
+    return { runtime: updated, affected };
+  }
   function validateDiscussion(value, transcript) {
     const lines = transcript.split(/\r?\n/);
     if (typeof value?.mainline !== "string" || !value.mainline.trim() || value.mainline.length > 2e3 || !Array.isArray(value.points) || !value.points.length || value.points.length > 12) {
@@ -347,6 +394,11 @@
 
   // observability.mjs
   var actionLabels = { start: "\u5F00\u59CB\u6267\u884C", complete: "\u786E\u8BA4\u4EA4\u4ED8", ask: "\u8BF7\u6C42\u8865\u5145", answer: "\u63D0\u4EA4\u7B54\u590D", fail: "\u62A5\u544A\u5931\u8D25", retry: "\u4EBA\u5DE5\u91CD\u8BD5" };
+  actionLabels.rollback = "\u56DE\u9000\u5B9E\u73B0";
+  actionLabels.invalidated = "\u4EA4\u4ED8\u9700\u91CD\u9A8C";
+  function historyText(item) {
+    return actionLabels[item.action] + (item.test ? " \xB7 " + item.test + " \u2192 " + item.target : "") + " \xB7 " + item.note;
+  }
   var node = (tag, text2 = "", className = "") => {
     const item = document.createElement(tag);
     item.textContent = text2;
@@ -475,6 +527,7 @@
     function renderExecution(container) {
       const { plan } = getResult();
       const arrangement2 = getArrangement();
+      const tasks = new Map(plan.tasks.map((task) => [task.id, task]));
       container.append(node("p", "\u4EFB\u52A1\u6267\u884C\u7531\u8D1F\u8D23\u4EBA\u6216\u5916\u90E8 Agent \u5B8C\u6210\uFF0C\u5728\u6B64\u63D0\u4EA4\u8FDB\u5EA6\u4E0E\u4EA4\u4ED8\u8BB0\u5F55\u3002\u5B8C\u6210\u524D\u7F6E\u4EFB\u52A1\u540E\uFF0C\u540E\u7EED\u4EFB\u52A1\u624D\u53EF\u5F00\u59CB\u3002", "hint"));
       for (const task of plan.tasks) {
         const state = taskState(task.id, runtime, arrangement2);
@@ -485,10 +538,11 @@
           node("p", "\u9884\u671F\u4EA4\u4ED8\u7269\uFF1A" + task.output),
           node("p", "\u524D\u7F6E\uFF1A" + (arrangement2.dependencies[task.id].map((id) => id + " " + stateLabels[taskState(id, runtime, arrangement2)]).join("\u3001") || "\u65E0"))
         );
+        if (task.test) card.append(node("p", "\u6D4B\u8BD5\u76EE\u6807\uFF1A" + task.test.targets.map((id) => id + " " + tasks.get(id).title).join("\u3001")));
         const list = node("ul", "", "execution-history");
         for (const item of runtime[task.id]?.notes || []) list.append(node(
           "li",
-          new Date(item.time).toLocaleTimeString("zh-CN") + " \xB7 " + actionLabels[item.action] + " \xB7 " + item.note
+          new Date(item.time).toLocaleTimeString("zh-CN") + " \xB7 " + historyText(item)
         ));
         if (list.childElementCount) card.append(list);
         const allowed = { ready: ["start"], running: ["ask", "fail", "complete"], waiting: ["answer"], failed: ["retry"] }[state] || [];
@@ -511,6 +565,40 @@
               error.textContent = issue.message;
             }
           }));
+          if (state === "failed" && task.test) {
+            const targetLabel = node("label", "\u56DE\u9000\u76EE\u6807");
+            const targets = node("select");
+            targets.append(new Option("\u9009\u5B9A\u786E\u8BA4\u6709\u7F3A\u9677\u7684\u5B9E\u73B0\u4EFB\u52A1", ""));
+            for (const id of task.test.targets) targets.append(new Option(id + " \xB7 " + tasks.get(id).title, id));
+            if (task.test.targets.length === 1) targets.value = task.test.targets[0];
+            targetLabel.append(targets);
+            const impact = node("p", "", "hint");
+            const rollback = button("\u56DE\u9000\u5E76\u8981\u6C42\u91CD\u9A8C", () => {
+              try {
+                const id = targets.value;
+                const update = rollbackTask(task, id, note.value, runtime, arrangement2);
+                runtime = update.runtime;
+                log(
+                  task.id,
+                  "\u56DE\u9000\u5230 " + id,
+                  note.value.trim() + "\u3002\u9700\u91CD\u65B0\u9A8C\u8BC1\uFF1A" + update.affected.join("\u3001"),
+                  { rollbackTarget: id, affected: update.affected }
+                );
+                container.replaceChildren();
+                renderExecution(container);
+              } catch (issue) {
+                error.textContent = issue.message;
+              }
+            });
+            const showImpact = () => {
+              rollback.disabled = !targets.value;
+              impact.textContent = targets.value ? "\u4FEE\u590D " + targets.value + " \u540E\u91CD\u65B0\u9A8C\u8BC1 " + rollbackScope(targets.value, arrangement2).join("\u3001") + "\u3002" : "\u9009\u5B9A\u5B9E\u73B0\u4EFB\u52A1\u540E\u53EF\u9884\u89C8\u5F71\u54CD\u8303\u56F4\u3002";
+            };
+            targets.addEventListener("change", showImpact);
+            showImpact();
+            card.append(targetLabel, impact);
+            actions.append(rollback);
+          }
           card.append(label, actions, error);
         }
         container.append(card);
@@ -535,7 +623,11 @@
           "- \u6267\u884C\u72B6\u6001\uFF1A" + stateLabels[taskState(task.id, runtime, arrangement2)],
           ""
         );
-        for (const item of runtime[task.id]?.notes || []) lines.push("- " + actionLabels[item.action] + " \xB7 " + item.note);
+        if (task.test) lines.push(
+          "- \u6D4B\u8BD5\u5C42\u6B21\uFF1A" + testLevelLabels[task.test.level],
+          "- \u9A8C\u8BC1\u53CA\u5931\u8D25\u5B9A\u4F4D\u8303\u56F4\uFF1A" + task.test.targets.join("\u3001")
+        );
+        for (const item of runtime[task.id]?.notes || []) lines.push("- " + historyText(item));
         lines.push("");
       }
       download("task.md", lines.join("\n"), "text/markdown;charset=utf-8");
@@ -1022,6 +1114,7 @@
     }
     if (chainView === "tests") {
       const { strategy, cases } = pipeline.testPlan;
+      const tasks = new Map(result.plan.tasks.map((task) => [task.id, task]));
       content.append(element("h3", "\u6D4B\u8BD5\u65B9\u6848"), element("p", strategy));
       for (const test of cases) {
         const card = element("article", "", "chain-card");
@@ -1031,11 +1124,12 @@
         const list = element("ol", "", "test-steps");
         test.steps.forEach((step) => list.append(element("li", step)));
         const batch = arrangement.rounds.findIndex((ids) => ids.includes(test.task)) + 1;
+        const level = tasks.get(test.task).test?.level;
         card.append(
           element("h4", test.id + " \xB7 " + test.title),
           element(
             "p",
-            test.requirements.join("\u3001") + " \u2192 " + test.design + " \u2192 " + test.task + " \xB7 \u7B2C " + batch + " \u6279",
+            (level ? testLevelLabels[level] + " \xB7 " : "") + test.requirements.join("\u3001") + " \u2192 " + test.design + " \u2192 " + test.task + " \xB7 \u7B2C " + batch + " \u6279",
             "hint"
           ),
           element("p", "\u524D\u7F6E\u6761\u4EF6\uFF1A" + test.setup),
@@ -1108,6 +1202,7 @@
         element("p", "\u9A8C\u6536\uFF1A" + task.acceptance)
       );
       if (result.pipeline) card.append(element("p", "\u8BBE\u8BA1\u6765\u6E90\uFF1A" + task.designs.join("\u3001")));
+      if (task.test) card.append(element("p", "\u6D4B\u8BD5\u76EE\u6807\u53CA\u5931\u8D25\u5B9A\u4F4D\u8303\u56F4\uFF1A" + task.test.targets.join("\u3001")));
       const added = arrangement.edges.filter((edge) => edge.to === task.id && !task.inputs.includes(edge.artifact));
       if (added.length) card.append(element("p", "\u7F16\u6392\u8865\u9F50\u7684\u8F93\u5165\uFF1A" + added.map((edge) => edge.artifact).join("\u3001")));
     }
@@ -1499,6 +1594,10 @@ export const executeCoreTask = async (req: Request, res: Response) => {
         "- \u9A8C\u6536\uFF1A" + task.acceptance
       );
       if (result.pipeline) lines.push("- \u8BBE\u8BA1\u6765\u6E90\uFF1A" + task.designs.join("\u3001"));
+      if (task.test) lines.push(
+        "- \u6D4B\u8BD5\u5C42\u6B21\uFF1A" + testLevelLabels[task.test.level],
+        "- \u6D4B\u8BD5\u76EE\u6807\u53CA\u5931\u8D25\u5B9A\u4F4D\u8303\u56F4\uFF1A" + task.test.targets.join("\u3001")
+      );
       lines.push("");
     }
     lines.push("## \u4EFB\u52A1\u4F9D\u8D56", "");
@@ -1542,10 +1641,11 @@ export const executeCoreTask = async (req: Request, res: Response) => {
         lines.push("## \u6D4B\u8BD5\u65B9\u6848", "", testPlan.strategy, "");
         for (const test of testPlan.cases) {
           const batch = arrangement.rounds.findIndex((ids) => ids.includes(test.task)) + 1;
+          const level = byTask.get(test.task).test?.level;
           lines.push(
             "### " + test.id + " \xB7 " + test.title,
             "",
-            "\u5173\u8054\uFF1A" + test.requirements.join("\u3001") + " \u2192 " + test.design + " \u2192 " + test.task + " \xB7 \u7B2C " + batch + " \u6279",
+            "\u5173\u8054\uFF1A" + (level ? testLevelLabels[level] + " \xB7 " : "") + test.requirements.join("\u3001") + " \u2192 " + test.design + " \u2192 " + test.task + " \xB7 \u7B2C " + batch + " \u6279",
             "",
             "\u524D\u7F6E\u6761\u4EF6\uFF1A" + test.setup,
             ""

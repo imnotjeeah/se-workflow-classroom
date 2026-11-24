@@ -1,5 +1,5 @@
 import { examples } from './examples.mjs';
-import { schedule } from './workflow.mjs';
+import { schedule, testLevelLabels } from './workflow.mjs';
 import { validateDesign, validateTaskLinks, validateTestPlan, designMarkdown, designFeedback } from './pipeline.mjs';
 import { createObservability } from './observability.mjs';
 
@@ -444,6 +444,7 @@ function renderChain() {
   }
   if (chainView === 'tests') {
     const {strategy, cases} = pipeline.testPlan;
+    const tasks = new Map(result.plan.tasks.map(task => [task.id, task]));
     content.append(element('h3', '测试方案'), element('p', strategy));
     for (const test of cases) {
       const card = element('article', '', 'chain-card');
@@ -453,8 +454,10 @@ function renderChain() {
       const list = element('ol', '', 'test-steps');
       test.steps.forEach(step => list.append(element('li', step)));
       const batch = arrangement.rounds.findIndex(ids => ids.includes(test.task)) + 1;
+      const level = tasks.get(test.task).test?.level;
       card.append(element('h4', test.id + ' · ' + test.title),
-        element('p', test.requirements.join('、') + ' → ' + test.design + ' → ' + test.task + ' · 第 ' + batch + ' 批',
+        element('p', (level ? testLevelLabels[level] + ' · ' : '') +
+          test.requirements.join('、') + ' → ' + test.design + ' → ' + test.task + ' · 第 ' + batch + ' 批',
           'hint'),
         element('p', '前置条件：' + test.setup), list,
         element('p', '预期结果：' + test.expected), link);
@@ -520,6 +523,7 @@ function taskCard(task, full = false, interactive = false) {
       element('p', '交付：' + task.output),
       element('p', '验收：' + task.acceptance));
     if (result.pipeline) card.append(element('p', '设计来源：' + task.designs.join('、')));
+    if (task.test) card.append(element('p', '测试目标及失败定位范围：' + task.test.targets.join('、')));
     const added = arrangement.edges.filter(edge => edge.to === task.id && !task.inputs.includes(edge.artifact));
     if (added.length) card.append(element('p', '编排补齐的输入：' + added.map(edge => edge.artifact).join('、')));
   }
@@ -931,6 +935,8 @@ byId('report').addEventListener('click', () => {
       '- 角色：' + task.role, '- 关联需求：' + task.requirements.join('、'),
       '- 交付物：' + task.output, '- 验收：' + task.acceptance);
     if (result.pipeline) lines.push('- 设计来源：' + task.designs.join('、'));
+    if (task.test) lines.push('- 测试层次：' + testLevelLabels[task.test.level],
+      '- 测试目标及失败定位范围：' + task.test.targets.join('、'));
     lines.push('');
   }
   lines.push('## 任务依赖', '');
@@ -958,8 +964,10 @@ byId('report').addEventListener('click', () => {
       lines.push('## 测试方案', '', testPlan.strategy, '');
       for (const test of testPlan.cases) {
         const batch = arrangement.rounds.findIndex(ids => ids.includes(test.task)) + 1;
+        const level = byTask.get(test.task).test?.level;
         lines.push('### ' + test.id + ' · ' + test.title, '',
-          '关联：' + test.requirements.join('、') + ' → ' + test.design + ' → ' + test.task + ' · 第 ' + batch + ' 批',
+          '关联：' + (level ? testLevelLabels[level] + ' · ' : '') +
+          test.requirements.join('、') + ' → ' + test.design + ' → ' + test.task + ' · 第 ' + batch + ' 批',
           '', '前置条件：' + test.setup, '');
         test.steps.forEach((step, index) => lines.push((index + 1) + '. ' + step));
         lines.push('', '预期结果：' + test.expected, '');

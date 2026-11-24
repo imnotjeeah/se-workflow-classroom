@@ -24,6 +24,40 @@ export function transition(id, action, note, runtime, arrangement) {
     notes: [...record.notes, {action, note: note.trim(), time: new Date().toISOString()}]};
 }
 
+export function rollbackScope(target, arrangement) {
+  const affected = new Set([target]);
+  for (const id of arrangement.rounds.flat()) {
+    if (arrangement.dependencies[id].some(parent => affected.has(parent))) affected.add(id);
+  }
+  return [...affected].slice(1);
+}
+
+export function rollbackTask(test, target, note, runtime, arrangement) {
+  if (!test.test?.targets.includes(target) || !arrangement.dependencies[test.id]?.includes(target)) {
+    throw new Error('请选择该测试实际依赖的实现任务');
+  }
+  if (runtime[test.id]?.status !== 'failed' || runtime[target]?.status !== 'done') {
+    throw new Error('测试须处于失败待处理状态，且实现任务已交付');
+  }
+  if (typeof note !== 'string' || !note.trim() || note.length > 2000) {
+    throw new Error('请填写定位依据或失败现象');
+  }
+  const affected = rollbackScope(target, arrangement);
+  const updated = {...runtime};
+  const time = new Date().toISOString();
+  function mark(id, status, action) {
+    const previous = runtime[id] ?? {attempts: 0, notes: []};
+    updated[id] = {...previous, status, notes: [...previous.notes, {
+      time, action, note: note.trim(), test: test.id, target,
+    }]};
+  }
+  mark(target, 'failed', 'rollback');
+  for (const id of affected) {
+    if (runtime[id]) mark(id, 'pending', 'invalidated');
+  }
+  return {runtime: updated, affected};
+}
+
 export function validateDiscussion(value, transcript) {
   const lines = transcript.split(/\r?\n/);
   if (typeof value?.mainline !== 'string' || !value.mainline.trim() || value.mainline.length > 2000 ||

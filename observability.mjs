@@ -1,6 +1,13 @@
-import {stateLabels, taskState, transition, validateDiscussion, validateRuntime} from './interaction.mjs';
+import {stateLabels, taskState, transition, rollbackScope, rollbackTask, validateDiscussion, validateRuntime} from './interaction.mjs';
+import {testLevelLabels} from './workflow.mjs';
 
 const actionLabels = {start:'开始执行',complete:'确认交付',ask:'请求补充',answer:'提交答复',fail:'报告失败',retry:'人工重试'};
+actionLabels.rollback = '回退实现';
+actionLabels.invalidated = '交付需重验';
+
+function historyText(item) {
+  return actionLabels[item.action] + (item.test ? ' · ' + item.test + ' → ' + item.target : '') + ' · ' + item.note;
+}
 const node = (tag, text = '', className = '') => {
   const item = document.createElement(tag);
   item.textContent = text;
@@ -128,6 +135,7 @@ export function createObservability({request, ready, adopt, getResult, getArrang
   function renderExecution(container) {
     const {plan} = getResult();
     const arrangement = getArrangement();
+    const tasks = new Map(plan.tasks.map(task => [task.id, task]));
     container.append(node('p', '任务执行由负责人或外部 Agent 完成，在此提交进度与交付记录。完成前置任务后，后续任务才可开始。', 'hint'));
     for (const task of plan.tasks) {
       const state = taskState(task.id, runtime, arrangement);
@@ -136,9 +144,11 @@ export function createObservability({request, ready, adopt, getResult, getArrang
         node('p', task.role + ' · ' + stateLabels[state] + ' · 尝试 ' + (runtime[task.id]?.attempts || 0) + ' 次', 'execution-status'),
         node('p', '预期交付物：' + task.output),
         node('p', '前置：' + (arrangement.dependencies[task.id].map(id => id + ' ' + stateLabels[taskState(id, runtime, arrangement)]).join('、') || '无')));
+      if (task.test) card.append(node('p', '测试目标：' + task.test.targets
+        .map(id => id + ' ' + tasks.get(id).title).join('、')));
       const list = node('ul', '', 'execution-history');
       for (const item of runtime[task.id]?.notes || []) list.append(node('li',
-        new Date(item.time).toLocaleTimeString('zh-CN') + ' · ' + actionLabels[item.action] + ' · ' + item.note));
+        new Date(item.time).toLocaleTimeString('zh-CN') + ' · ' + historyText(item)));
       if (list.childElementCount) card.append(list);
       const allowed = {ready:['start'],running:['ask','fail','complete'],waiting:['answer'],failed:['retry']}[state] || [];
       if (allowed.length) {
@@ -158,6 +168,35 @@ export function createObservability({request, ready, adopt, getResult, getArrang
             renderExecution(container);
           } catch (issue) { error.textContent = issue.message; }
         }));
+        if (state === 'failed' && task.test) {
+          const targetLabel = node('label', '回退目标');
+          const targets = node('select');
+          targets.append(new Option('选定确认有缺陷的实现任务', ''));
+          for (const id of task.test.targets) targets.append(new Option(id + ' · ' + tasks.get(id).title, id));
+          if (task.test.targets.length === 1) targets.value = task.test.targets[0];
+          targetLabel.append(targets);
+          const impact = node('p', '', 'hint');
+          const rollback = button('回退并要求重验', () => {
+            try {
+              const id = targets.value;
+              const update = rollbackTask(task, id, note.value, runtime, arrangement);
+              runtime = update.runtime;
+              log(task.id, '回退到 ' + id, note.value.trim() + '。需重新验证：' + update.affected.join('、'),
+                {rollbackTarget: id, affected: update.affected});
+              container.replaceChildren();
+              renderExecution(container);
+            } catch (issue) { error.textContent = issue.message; }
+          });
+          const showImpact = () => {
+            rollback.disabled = !targets.value;
+            impact.textContent = targets.value ? '修复 ' + targets.value + ' 后重新验证 ' +
+              rollbackScope(targets.value, arrangement).join('、') + '。' : '选定实现任务后可预览影响范围。';
+          };
+          targets.addEventListener('change', showImpact);
+          showImpact();
+          card.append(targetLabel, impact);
+          actions.append(rollback);
+        }
         card.append(label, actions, error);
       }
       container.append(card);
@@ -177,7 +216,9 @@ export function createObservability({request, ready, adopt, getResult, getArrang
         '- 前置任务：' + (arrangement.dependencies[task.id].join('、') || '无'),
         '- 交付物：' + task.output, '- 验收：' + task.acceptance,
         '- 执行状态：' + stateLabels[taskState(task.id, runtime, arrangement)], '');
-      for (const item of runtime[task.id]?.notes || []) lines.push('- ' + actionLabels[item.action] + ' · ' + item.note);
+      if (task.test) lines.push('- 测试层次：' + testLevelLabels[task.test.level],
+        '- 验证及失败定位范围：' + task.test.targets.join('、'));
+      for (const item of runtime[task.id]?.notes || []) lines.push('- ' + historyText(item));
       lines.push('');
     }
     download('task.md', lines.join('\n'), 'text/markdown;charset=utf-8');
