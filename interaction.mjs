@@ -32,12 +32,16 @@ export function rollbackScope(target, arrangement) {
   return [...affected].slice(1);
 }
 
-export function rollbackTask(test, target, note, runtime, arrangement) {
-  if (!test.test?.targets.includes(target) || !arrangement.dependencies[test.id]?.includes(target)) {
-    throw new Error('请选择该测试实际依赖的实现任务');
+export function rollbackTargets(task) {
+  return task.test?.targets ?? (task.review ? [task.review.target] : []);
+}
+
+export function rollbackTask(checkpoint, target, note, runtime, arrangement) {
+  if (!rollbackTargets(checkpoint).includes(target) || !arrangement.dependencies[checkpoint.id]?.includes(target)) {
+    throw new Error('请选择该测试或评审实际依赖的实现任务');
   }
-  if (runtime[test.id]?.status !== 'failed' || runtime[target]?.status !== 'done') {
-    throw new Error('测试须处于失败待处理状态，且实现任务已交付');
+  if (runtime[checkpoint.id]?.status !== 'failed' || runtime[target]?.status !== 'done') {
+    throw new Error('测试或评审须处于失败待处理状态，且实现任务已交付');
   }
   if (typeof note !== 'string' || !note.trim() || note.length > 2000) {
     throw new Error('请填写定位依据或失败现象');
@@ -48,7 +52,7 @@ export function rollbackTask(test, target, note, runtime, arrangement) {
   function mark(id, status, action) {
     const previous = runtime[id] ?? {attempts: 0, notes: []};
     updated[id] = {...previous, status, notes: [...previous.notes, {
-      time, action, note: note.trim(), test: test.id, target,
+      time, action, note: note.trim(), test: checkpoint.id, target,
     }]};
   }
   mark(target, 'failed', 'rollback');

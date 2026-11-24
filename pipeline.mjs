@@ -64,23 +64,10 @@ export function validateTaskLinks(plan, design) {
 
 export function assignTestCases(design, plan) {
   const testers = plan.tasks.filter(task => task.role === '测试');
-  const candidates = testers.flatMap(task => design.components
-    .filter(part => task.designs.includes(part.id))
-    .map(part => ({
-      task: task.id, design: part.id,
-      requirements: part.requirements.filter(id => task.requirements.includes(id)),
-    }))
-    .sort((a, b) => b.requirements.length - a.requirements.length));
-  const selected = testers.map(task => candidates.find(candidate => candidate.task === task.id));
-  const coveredRequirements = new Set(selected.flatMap(item => item.requirements));
-  const coveredDesigns = new Set(selected.map(item => item.design));
-  for (const item of candidates) {
-    if (coveredDesigns.has(item.design) && item.requirements.every(id => coveredRequirements.has(id))) continue;
-    selected.push(item);
-    coveredDesigns.add(item.design);
-    item.requirements.forEach(id => coveredRequirements.add(id));
-  }
-  return selected.map((item, index) => ({id: 'TC' + (index + 1), ...item}));
+  return testers.map((task, index) => ({
+    id: 'TC' + (index + 1), task: task.id, requirements: task.requirements,
+    ...(design ? {design: task.designs[0], designs: task.designs} : {}),
+  }));
 }
 
 export function bindTestCases(value, assignments) {
@@ -88,33 +75,55 @@ export function bindTestCases(value, assignments) {
   const given = new Map(value.cases.map(item => [item.id, item]));
   check(given.size === assignments.length && assignments.every(item => given.has(item.id)),
     '测试用例编号必须与分配清单完全一致');
-  return {strategy: value.strategy, cases: assignments.map(item => ({...given.get(item.id), ...item}))};
+  return {strategy: value.strategy, cases: assignments.map(item => {
+    const {title, setup, steps, expected} = given.get(item.id);
+    return {...item, title, setup, steps, expected};
+  })};
 }
 
 export function validateTestPlan(value, design, plan) {
   check(text(value?.strategy, 1000), '测试方案缺少范围与方法');
   entries(value.cases, 'TC', '测试方案', 48);
-  const designById = new Map(design.components.map(part => [part.id, part]));
+  const designById = new Map((design?.components ?? []).map(part => [part.id, part]));
   const testers = new Map(plan.tasks.filter(task => task.role === '测试').map(task => [task.id, task]));
   const coveredRequirements = new Set();
   const coveredDesigns = new Set();
   const coveredTasks = new Set();
   for (const test of value.cases) {
-    const part = designById.get(test.design);
     const task = testers.get(test.task);
-    check(part && task?.designs.includes(part.id), test.id + ' 的设计编号与测试任务不匹配');
-    check(references(test.requirements, new Set(part.requirements.filter(id => task.requirements.includes(id)))),
+    const parts = test.designs ?? (test.design ? [test.design] : []);
+    check(task && (design ? references(parts, designById) && parts[0] === test.design &&
+      parts.every(id => task.designs.includes(id)) : !parts.length && test.design === undefined),
+      test.id + ' 的设计编号与测试任务不匹配');
+    const applicable = new Set(parts.flatMap(id => designById.get(id).requirements));
+    check(references(test.requirements, new Set(task.requirements.filter(id => !design || applicable.has(id)))) &&
+      parts.every(id => designById.get(id).requirements.some(req => test.requirements.includes(req))),
       test.id + ' 引用了与设计或测试任务无关的需求');
     check(text(test.title, 120) && text(test.setup) && text(test.expected) && Array.isArray(test.steps) &&
       test.steps.length > 0 && test.steps.length <= 10 && test.steps.every(step => text(step, 300)),
       test.id + ' 缺少标题、前置条件、可执行步骤或预期结果');
     test.requirements.forEach(id => coveredRequirements.add(id));
-    coveredDesigns.add(part.id);
+    parts.forEach(id => coveredDesigns.add(id));
     coveredTasks.add(task.id);
   }
   check(plan.requirements.every(req => coveredRequirements.has(req.id)), '存在未被用例覆盖的需求');
   check(coveredDesigns.size === designById.size && coveredTasks.size === testers.size,
     '每项设计及测试任务都需要关联测试用例');
+  for (const task of testers.values()) {
+    if (!task.test?.cases) continue;
+    const cases = value.cases.filter(test => test.task === task.id);
+    const ids = cases.map(test => test.id);
+    check(ids.length === task.test.cases.length && task.test.cases.every(id => ids.includes(id)),
+      task.id + ' 的用例清单与测试方案不一致');
+    const covered = new Set(cases.flatMap(test => test.requirements));
+    check(task.requirements.every(id => covered.has(id)), task.id + ' 的用例未覆盖任务的全部需求');
+  }
+}
+
+export function bindTestTasks(plan, testPlan) {
+  return {...plan, tasks: plan.tasks.map(task => task.test ? {
+    ...task, test: {...task.test, cases: testPlan.cases.filter(item => item.task === task.id).map(item => item.id)},
+  } : task)};
 }
 
 export function designMarkdown(requirements, design) {

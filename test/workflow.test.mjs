@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {addTestTasks, schedule} from '../workflow.mjs';
-import {assignTestCases, bindTestCases, validateTaskLinks, validateTestPlan} from '../pipeline.mjs';
+import {addTestTasks, schedule, serialImplementationChain} from '../workflow.mjs';
+import {assignTestCases, bindTestCases, bindTestTasks, validateTaskLinks, validateTestPlan} from '../pipeline.mjs';
 import {rollbackTask, taskState, transition, validateRuntime} from '../interaction.mjs';
 
 const requirements = [
@@ -25,7 +25,7 @@ const arrangement = schedule(plan, 4);
 const unitFor = id => plan.tasks.find(task => task.test?.level === 'unit' && task.test.targets[0] === id);
 const endToEnd = plan.tasks.find(task => task.test?.level === 'e2e');
 
-test('each implementation has an early unit test and handoffs are gated', () => {
+test('unit tests gate handoffs and review runs in parallel', () => {
   const batchOf = id => arrangement.rounds.findIndex(batch => batch.includes(id));
   const unit = unitFor('T1');
   assert.deepEqual(arrangement.dependencies[unit.id], ['T1']);
@@ -35,9 +35,35 @@ test('each implementation has an early unit test and handoffs are gated', () => 
   const integration = plan.tasks.find(task => task.test?.level === 'integration' && task.test.targets.includes('T2'));
   assert.deepEqual(integration.test.targets, ['T1', 'T2']);
   assert(arrangement.dependencies[integration.id].includes(unitFor('T2').id));
-  assert(batchOf(integration.id) < batchOf('T4'));
+  assert(arrangement.dependencies.T4.includes(unitFor('T2').id));
+  assert(!arrangement.dependencies.T4.includes(integration.id));
+  assert.equal(batchOf(integration.id), batchOf('T4'));
+  for (const id of ['T1', 'T2', 'T3', 'T4']) {
+    const review = plan.tasks.find(task => task.review?.target === id);
+    assert.deepEqual(arrangement.dependencies[review.id], [id]);
+    assert.equal(batchOf(review.id), batchOf(unitFor(id).id));
+    assert(arrangement.dependencies[endToEnd.id].includes(review.id));
+  }
   assert.deepEqual(arrangement.rounds.at(-1), [endToEnd.id]);
   validateTaskLinks(plan, design);
+});
+
+test('a shared contract enables coding branches and real joint integration', () => {
+  const contract = {id:'T1', title:'约定行程接口', role:'后端', kind:'contract', requirements:['R1','R2'],
+    designs:['D1','D2'], inputs:[], output:'contract', acceptance:'接口类型和错误码明确'};
+  const modules = plan.tasks.filter(task => !task.test && !task.review && task.id !== 'T1')
+    .map(task => ({...task, inputs:['contract']}));
+  const branch = addTestTasks({project:plan.project, requirements, tasks:[contract, ...modules]});
+  const {rounds} = schedule(branch, 4);
+  assert.deepEqual(rounds[0], ['T1']);
+  assert.deepEqual(rounds[1], ['T2','T3','T4']);
+  assert.equal(branch.tasks.filter(task => task.review).length, 3);
+  const joint = branch.tasks.find(task => task.test?.level === 'integration');
+  assert.deepEqual(joint.test.targets, ['T2','T3','T4']);
+  assert.deepEqual(serialImplementationChain(branch.tasks), []);
+  assert.deepEqual(serialImplementationChain([
+    contract, modules[0], {...modules[1], inputs:['editor']}, {...modules[2], inputs:['csv']},
+  ]), ['T2','T3','T4']);
 });
 
 test('rollback resets only the implementation and downstream states, retaining notes', () => {
@@ -76,7 +102,29 @@ test('test case associations are assigned by the workflow and remain valid', () 
     expected:'返回指定结果', design:'invalid', task:'invalid', requirements:['invalid']}));
   const result = bindTestCases({strategy:'逐层测试', cases}, assignments);
   validateTestPlan(result, design, plan);
+  const withCases = bindTestTasks(plan, result);
+  validateTestPlan(result, design, withCases);
+  assert(withCases.tasks.filter(task => task.test).every(task => task.test.cases.length > 0));
+  withCases.tasks.find(task => task.test).test.cases = ['TC999'];
+  assert.throws(() => validateTestPlan(result, design, withCases), /不一致/);
   assert.throws(() => bindTestCases({strategy:'逐层测试', cases:cases.slice(1)}, assignments), /编号/);
+});
+
+test('a failed review returns to the reviewed code and preserves unrelated work', () => {
+  const review = plan.tasks.find(task => task.review?.target === 'T1');
+  const runtime = {};
+  for (const id of arrangement.rounds.flat()) {
+    runtime[id] = transition(id, 'start', '开始', runtime, arrangement);
+    runtime[id] = transition(id, id === review.id ? 'fail' : 'complete', '记录', runtime, arrangement);
+    if (id === review.id) break;
+  }
+  assert.throws(() => rollbackTask(review, 'T3', '错误目标', runtime, arrangement), /实际依赖/);
+  const update = rollbackTask(review, 'T1', '缺少输入边界判断', runtime, arrangement);
+  assert.equal(update.runtime.T1.status, 'failed');
+  assert.equal(update.runtime[review.id].status, 'pending');
+  assert.equal(update.runtime[unitFor('T1').id].status, 'pending');
+  assert.equal(update.runtime.T3, runtime.T3);
+  validateRuntime(update.runtime, plan, arrangement);
 });
 
 test('previous plans without test metadata retain their original dependencies', () => {

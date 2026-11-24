@@ -1,5 +1,7 @@
-import {stateLabels, taskState, transition, rollbackScope, rollbackTask, validateDiscussion, validateRuntime} from './interaction.mjs';
-import {testLevelLabels} from './workflow.mjs';
+import {stateLabels, taskState, transition, rollbackScope, rollbackTask, rollbackTargets, validateDiscussion, validateRuntime} from './interaction.mjs';
+import {taskStage, testLevelLabels} from './workflow.mjs';
+import {stanceLabels, discussionParticipants, acknowledgedAll, startConsensusRound,
+  registerStance, confirmConsensus, validateConsensus} from './consensus.mjs';
 
 const actionLabels = {start:'开始执行',complete:'确认交付',ask:'请求补充',answer:'提交答复',fail:'报告失败',retry:'人工重试'};
 actionLabels.rollback = '回退实现';
@@ -21,7 +23,7 @@ const button = (text, handler) => {
   return item;
 };
 
-export function createObservability({request, ready, adopt, getResult, getArrangement, download, isBusy, setBusy}) {
+export function createObservability({request, ready, adopt, getResult, getArrangement, download, isBusy, setBusy, renderCases, openPlan}) {
   let events = [], runtime = {}, discussion;
   const activity = document.getElementById('activity');
   const discussionResult = document.getElementById('discussion-result');
@@ -40,7 +42,8 @@ export function createObservability({request, ready, adopt, getResult, getArrang
         node('strong', event.stage + ' · ' + event.status), node('span', event.message));
       return row;
     }));
-    document.getElementById('event-count').textContent = events.length + ' 条记录';
+    document.getElementById('event-count').textContent = events.length;
+    document.getElementById('activity-empty').hidden = events.length > 0;
   }
 
   extract.addEventListener('click', async () => {
@@ -56,7 +59,8 @@ export function createObservability({request, ready, adopt, getResult, getArrang
     const source = transcript.value;
     try {
       const response = await request('discussion', {transcript: source});
-      discussion = {transcript: source, ...response.discussion, confirmed: false};
+      const {mainline, points} = response.discussion;
+      discussion = {transcript: source, mainline, points, confirmed: false};
       renderDiscussion();
     } catch (error) {
       discussionError.textContent = error.message;
@@ -84,52 +88,161 @@ export function createObservability({request, ready, adopt, getResult, getArrang
     original.append(node('summary', '查看带行号的讨论原文'),
       node('pre', discussion.transcript.split(/\r?\n/).map((line,i) => (i+1) + '  ' + line).join('\n'), 'transcript-source'));
     discussionResult.append(original);
-    const inputs = new Map();
     for (const point of discussion.points) {
       const card = node('article', '', 'chain-card');
       card.append(node('h4', point.id + ' · ' + (point.kind === 'open' ? '待确认' : '明确意见')),
         node('p', point.text));
       for (const evidence of point.evidence) card.append(node('blockquote', '第 ' + evidence.line + ' 行 · ' + evidence.quote));
-      if (point.kind === 'open') {
-        const label = node('label', '负责人处理决定');
-        const input = node('input');
-        input.maxLength = 500;
-        input.value = discussion.resolutions?.[point.id] || '';
-        input.disabled = discussion.confirmed;
-        label.append(input);
-        card.append(label);
-        inputs.set(point.id, input);
-      }
       discussionResult.append(card);
     }
-    const label = node('label', '共同理解草稿（可修改）');
-    const mainline = node('textarea');
-    mainline.value = discussion.confirmedText || discussion.mainline;
-    mainline.maxLength = 2000;
-    mainline.disabled = discussion.confirmed;
-    label.append(mainline);
-    const confirm = button(discussion.confirmed ? '负责人已确认' : '确认并转入产品想法', () => {
-      if (isBusy()) return;
-      const resolutions = Object.fromEntries([...inputs].map(([id,input]) => [id,input.value.trim()]));
-      if (!mainline.value.trim() || Object.values(resolutions).some(value => !value)) {
-        discussionError.textContent = '请先填写共同理解，并处理所有待确认问题。';
-        return;
+    const rounds = discussion.rounds ?? [];
+    const current = rounds.at(-1);
+    if (!current) {
+      if (discussion.confirmed) {
+        discussionResult.append(node('h3', '旧版记录 · 已由负责人确认'), node('p', discussion.confirmedText || discussion.mainline));
+      } else {
+        discussionResult.append(proposalEditor());
       }
-      const text = [mainline.value.trim(), ...Object.entries(resolutions).map(([id,value]) =>
-        '负责人对 ' + id + ' 的确认：' + value)].join('\n');
-      if (text.length > 4000 || text.length < 15) {
-        discussionError.textContent = '确认后的产品想法需在 15 至 4000 字之间，请调整主线或决定。';
-        return;
-      }
-      const saved = {...discussion, resolutions, confirmedText: mainline.value.trim(), confirmed: true};
-      adopt(text);
-      discussion = saved;
-      log('讨论确认', '人工确认', '共同理解及 ' + Object.keys(resolutions).length + ' 项分歧处理已转入产品想法');
+      return;
+    }
+    discussionResult.append(roundCard(current));
+    if (rounds.length > 1) {
+      const history = node('details', '', 'consensus-history');
+      history.append(node('summary', '查看历史轮次（' + (rounds.length - 1) + ' 轮）'),
+        ...rounds.slice(0, -1).reverse().map(roundCard));
+      discussionResult.append(history);
+    }
+    if (discussion.confirmed) {
+      discussionResult.append(node('p', '共识已确认 · 第 ' + current.number + ' 轮全员同意 · 已转入产品想法',
+        'consensus-confirmed'), button('查看产品想法', openPlan));
+      return;
+    }
+    const readyToConfirm = acknowledgedAll(discussion);
+    const confirm = button('确认共识并转入产品想法', () => updateDiscussion(() => {
+      const accepted = confirmConsensus(discussion);
+      adopt(accepted.text);
+      discussion = accepted.discussion;
+      log('共识确认', '全员同意', '第 ' + current.number + ' 轮获 ' + discussion.participants.length + ' 位参与者同意，已转入产品想法',
+        {round: current.number, participants: discussion.participants});
+    }));
+    confirm.disabled = !readyToConfirm;
+    discussionResult.append(node('p', readyToConfirm ? '全员已同意本轮提案。' : '本轮全员同意后可转入产品想法。', 'hint'), confirm);
+    const revise = node('details', '', 'consensus-history');
+    revise.append(node('summary', '修订提案并开启新一轮'), proposalEditor(current));
+    discussionResult.append(revise);
+  }
+
+  function updateDiscussion(action) {
+    if (isBusy()) return;
+    try {
+      action();
       discussionError.textContent = '';
       renderDiscussion();
+    } catch (error) {
+      discussionError.textContent = error.message;
+    }
+  }
+
+  function labeled(parent, title, control) {
+    const label = node('label', title);
+    label.append(control);
+    parent.append(label);
+    return control;
+  }
+
+  function proposalEditor(previous) {
+    const editor = node('section', '', 'chain-card');
+    editor.append(node('h3', previous ? '第 ' + (previous.number + 1) + ' 轮提案' : '起草提案'));
+    let roster;
+    if (!previous) {
+      roster = labeled(editor, '参与者名单（每行一位）', node('textarea'));
+      roster.rows = 3;
+      roster.value = discussionParticipants(discussion.transcript).join('\n');
+    }
+    const proposal = labeled(editor, '共同决策提案', node('textarea'));
+    proposal.rows = 3;
+    proposal.maxLength = 2000;
+    proposal.value = previous?.proposal ?? discussion.mainline;
+    const decisions = discussion.points.filter(point => point.kind === 'open').map(point => {
+      const field = labeled(editor, point.id + ' 的拟议决定 · ' + point.text, node('input'));
+      field.maxLength = 500;
+      field.value = previous?.resolutions[point.id] ?? '';
+      return [point.id, field];
     });
-    confirm.disabled = discussion.confirmed;
-    discussionResult.append(label, confirm);
+    const responses = (previous?.votes ?? []).filter(vote => vote.stance !== 'agree').map(vote => {
+      const field = labeled(editor, '回应 ' + vote.participant + ' 的意见 · ' + vote.note, node('input'));
+      field.maxLength = 500;
+      return [vote.participant, field];
+    });
+    const read = fields => Object.fromEntries(fields.map(([id, field]) => [id, field.value]));
+    editor.append(button(previous ? '提交修订并开启新一轮' : '开启第一轮确认', () => updateDiscussion(() => {
+      discussion = startConsensusRound(discussion, {
+        participants: roster?.value.split(/\r?\n/).filter(line => line.trim()),
+        proposal: proposal.value, resolutions: read(decisions), responses: read(responses),
+      });
+      const round = discussion.rounds.at(-1);
+      log('共识确认', '开启第 ' + round.number + ' 轮', round.proposal,
+        {round: round.number, participants: discussion.participants, responses: round.responses});
+    })));
+    return editor;
+  }
+
+  function roundCard(round) {
+    const current = discussion.rounds.at(-1) === round;
+    const byName = new Map(round.votes.map(vote => [vote.participant, vote]));
+    const agrees = round.votes.filter(vote => vote.stance === 'agree').length;
+    const card = node('article', '', 'chain-card consensus-round');
+    card.append(node('h3', '第 ' + round.number + ' 轮 · ' + agrees + ' / ' + discussion.participants.length + ' 同意'),
+      node('p', round.proposal, 'chain-text'));
+    for (const [id, answer] of Object.entries(round.resolutions)) card.append(node('p', id + ' · ' + answer));
+    const list = node('ul');
+    for (const name of discussion.participants) {
+      const vote = byName.get(name);
+      const row = node('li', name + ' · ' + (vote ? stanceLabels[vote.stance] : '待登记'));
+      if (vote?.note) row.append(node('span', (vote.point ? vote.point + ' · ' : '') + vote.note));
+      if (vote && vote.stance !== 'agree') {
+        const revised = discussion.rounds[round.number];
+        const reply = revised?.responses[name];
+        const closed = discussion.rounds.slice(round.number).find(later =>
+          later.votes.some(item => item.participant === name && item.stance === 'agree'));
+        if (reply) row.append(node('span', '第 ' + revised.number + ' 轮回应 · ' + reply));
+        row.append(node('span', closed ? '异议已关闭 · 本人于第 ' + closed.number + ' 轮同意修订稿'
+          : reply ? '等待该参与者确认修订稿' : '待回应'));
+      }
+      list.append(row);
+    }
+    card.append(list);
+    if (current && !discussion.confirmed && byName.size < discussion.participants.length) {
+      card.append(stanceForm(discussion.participants.filter(name => !byName.has(name))));
+    }
+    if (current && discussion.confirmed) card.append(node('p', '已确认共识并转入产品想法', 'execution-status'));
+    return card;
+  }
+
+  function stanceForm(names) {
+    const form = node('div', '', 'consensus-form');
+    const participant = labeled(form, '参与者', node('select'));
+    participant.add(new Option('选择待登记参与者', ''));
+    names.forEach(name => participant.add(new Option(name, name)));
+    const stance = labeled(form, '立场', node('select'));
+    stance.add(new Option('选择立场', ''));
+    for (const [id, label] of Object.entries(stanceLabels)) stance.add(new Option(label, id));
+    const point = labeled(form, '涉及要点（适用于异议）', node('select'));
+    point.add(new Option('整份提案', ''));
+    for (const item of discussion.points) point.add(new Option(item.id + ' · ' + item.text, item.id));
+    const note = labeled(form, '意见说明（反对或保留时必填）', node('input'));
+    note.maxLength = 500;
+    form.append(node('p', '请登记参与者已经表达的立场。', 'hint'),
+      button('登记立场', () => updateDiscussion(() => {
+        discussion = registerStance(discussion, {
+          participant: participant.value, stance: stance.value, point: point.value, note: note.value,
+        });
+        const round = discussion.rounds.at(-1);
+        const vote = round.votes.at(-1);
+        log('共识确认', stanceLabels[vote.stance], '第 ' + round.number + ' 轮 · ' + vote.participant +
+          (vote.note ? ' · ' + vote.note : ''), {round: round.number, ...vote});
+      })));
+    return form;
   }
 
   function renderExecution(container) {
@@ -141,11 +254,13 @@ export function createObservability({request, ready, adopt, getResult, getArrang
       const state = taskState(task.id, runtime, arrangement);
       const card = node('article', '', 'execution-card');
       card.append(node('h3', task.id + ' · ' + task.title),
-        node('p', task.role + ' · ' + stateLabels[state] + ' · 尝试 ' + (runtime[task.id]?.attempts || 0) + ' 次', 'execution-status'),
+        node('p', taskStage(task) + ' · ' + stateLabels[state] + ' · 尝试 ' + (runtime[task.id]?.attempts || 0) + ' 次', 'execution-status'),
         node('p', '预期交付物：' + task.output),
         node('p', '前置：' + (arrangement.dependencies[task.id].map(id => id + ' ' + stateLabels[taskState(id, runtime, arrangement)]).join('、') || '无')));
       if (task.test) card.append(node('p', '测试目标：' + task.test.targets
-        .map(id => id + ' ' + tasks.get(id).title).join('、')));
+        .map(id => id + ' ' + tasks.get(id).title).join('、')), ...renderCases(task));
+      if (task.review) card.append(node('p', '评审对象：' + task.review.target + ' ' + tasks.get(task.review.target).title),
+        node('p', task.acceptance));
       const list = node('ul', '', 'execution-history');
       for (const item of runtime[task.id]?.notes || []) list.append(node('li',
         new Date(item.time).toLocaleTimeString('zh-CN') + ' · ' + historyText(item)));
@@ -168,12 +283,13 @@ export function createObservability({request, ready, adopt, getResult, getArrang
             renderExecution(container);
           } catch (issue) { error.textContent = issue.message; }
         }));
-        if (state === 'failed' && task.test) {
+        const candidates = rollbackTargets(task);
+        if (state === 'failed' && candidates.length) {
           const targetLabel = node('label', '回退目标');
           const targets = node('select');
           targets.append(new Option('选定确认有缺陷的实现任务', ''));
-          for (const id of task.test.targets) targets.append(new Option(id + ' · ' + tasks.get(id).title, id));
-          if (task.test.targets.length === 1) targets.value = task.test.targets[0];
+          for (const id of candidates) targets.append(new Option(id + ' · ' + tasks.get(id).title, id));
+          if (candidates.length === 1) targets.value = candidates[0];
           targetLabel.append(targets);
           const impact = node('p', '', 'hint');
           const rollback = button('回退并要求重验', () => {
@@ -210,7 +326,7 @@ export function createObservability({request, ready, adopt, getResult, getArrang
     const lines = ['# ' + result.plan.project + ' · task.md', '', '任务执行记录由负责人填写。', ''];
     for (const task of result.plan.tasks) {
       lines.push('## ' + task.id + ' · ' + task.title, '',
-        '- 工种：' + task.role, '- 需求：' + task.requirements.join('、'),
+        '- 工种：' + task.role, '- 工作类型：' + taskStage(task), '- 需求：' + task.requirements.join('、'),
         '- 设计：' + (task.designs?.join('、') || '已有设计规格'),
         '- 输入：' + (task.inputs.join('、') || '设计规格'),
         '- 前置任务：' + (arrangement.dependencies[task.id].join('、') || '无'),
@@ -218,6 +334,13 @@ export function createObservability({request, ready, adopt, getResult, getArrang
         '- 执行状态：' + stateLabels[taskState(task.id, runtime, arrangement)], '');
       if (task.test) lines.push('- 测试层次：' + testLevelLabels[task.test.level],
         '- 验证及失败定位范围：' + task.test.targets.join('、'));
+      if (task.review) lines.push('- 评审对象：' + task.review.target);
+      const testPlan = result.pipeline?.testPlan ?? result.testPlan;
+      for (const test of testPlan?.cases.filter(test => test.task === task.id) ?? []) {
+        lines.push('', '### ' + test.id + ' · ' + test.title, '',
+          '前置条件：' + test.setup, '',
+          ...test.steps.map((step, index) => (index + 1) + '. ' + step), '', '预期结果：' + test.expected, '');
+      }
       for (const item of runtime[task.id]?.notes || []) lines.push('- ' + historyText(item));
       lines.push('');
     }
@@ -240,6 +363,7 @@ export function createObservability({request, ready, adopt, getResult, getArrang
       if (restored.discussion) {
         if (typeof restored.discussion.transcript !== 'string') throw new Error('讨论原文无效');
         validateDiscussion(restored.discussion, restored.discussion.transcript);
+        validateConsensus(restored.discussion);
       }
       events = restored.events; runtime = restored.runtime; discussion = restored.discussion;
       if (discussion) transcript.value = discussion.transcript;

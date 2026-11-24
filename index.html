@@ -33,6 +33,7 @@
     <div class="brand"><span class="mark" aria-hidden="true">↳</span> SE Workflow</div>
     <div class="mast-actions" id="mast-actions" hidden>
       <div class="connection" id="connection" role="status">正在读取 DeepSeek API 配置</div>
+      <button id="open-activity" type="button" aria-haspopup="dialog">运行记录 <span id="event-count">0</span></button>
       <button id="configure" type="button">DeepSeek 密钥</button>
     </div>
   </header>
@@ -51,9 +52,13 @@
       <p role="status">正在加载工作台。请先完整解压，确保网页和配套文件在同一个文件夹。</p>
       <a href="http://127.0.0.1:8765/">已运行 Start.cmd，打开工作台</a>
     </section>
-    <details class="discussion-panel" id="discussion-panel">
-      <summary>作业三 · 讨论提炼与人工确认</summary>
-      <p class="hint">粘贴带发言人名称的多人或多 Agent 讨论，逐行查看摘要证据，处理分歧后转入产品想法。</p>
+    <nav class="workspace-nav" id="workspace-nav" aria-label="工作区" hidden>
+      <button id="workspace-plan" type="button" aria-controls="workspace" aria-pressed="true">规格与编排</button>
+      <button id="workspace-discussion" type="button" aria-controls="discussion-panel" aria-pressed="false">讨论与共识</button>
+    </nav>
+    <section class="discussion-panel" id="discussion-panel" aria-labelledby="discussion-title" hidden>
+      <h2 id="discussion-title">讨论提炼与共识确认</h2>
+      <p class="hint">粘贴带发言人名称的讨论。提炼要点后起草提案，逐人登记立场，全员同意后转入产品想法。</p>
       <label for="transcript">讨论原文</label>
       <textarea id="transcript" maxlength="4000" rows="5" placeholder="产品同学：……&#10;前端 Agent：……"></textarea>
       <div class="execution-actions">
@@ -62,11 +67,11 @@
       </div>
       <p id="discussion-error" class="error" role="alert"></p>
       <div id="discussion-result"></div>
-    </details>
+    </section>
     <div id="workspace" class="workspace" hidden>
       <section class="panel input-panel" aria-labelledby="input-title">
-        <div class="panel-head"><h2 id="input-title">工作流输入</h2></div>
-        <div class="input-body">
+        <div class="panel-head"><h2 id="input-title">工作流输入</h2><button type="button" id="toggle-input" aria-expanded="true" aria-controls="input-body">收起输入</button></div>
+        <div class="input-body" id="input-body">
           <label for="input-mode">输入起点</label>
           <select id="input-mode">
             <option value="idea">从产品想法开始</option>
@@ -117,13 +122,16 @@
         </div>
       </section>
     </div>
-    <details class="activity-panel" open>
-      <summary>可观测记录 · <span id="event-count">0 条记录</span></summary>
-      <p class="hint">记录实际生成阶段的开始、完成、失败、模型修正，以及负责人提交的执行与交互操作。</p>
-      <button id="export-activity" type="button">导出运行与交互记录</button>
-      <ol id="activity" aria-live="polite"></ol>
-    </details>
   </main>
+  <dialog id="activity-dialog" aria-labelledby="activity-title">
+    <div class="activity-head">
+      <div><h2 id="activity-title">运行与交互记录</h2><p class="hint">查看生成校验、共识确认、交付和回退。</p></div>
+      <form method="dialog"><button type="submit">关闭</button></form>
+    </div>
+    <ol id="activity" aria-live="polite"></ol>
+    <p id="activity-empty" class="hint">运行工作流或登记讨论立场后，记录会显示在这里。</p>
+    <div class="dialog-actions"><button id="export-activity" type="button">导出运行与交互记录</button></div>
+  </dialog>
   <dialog id="key-dialog" aria-labelledby="key-title">
     <form id="key-form">
       <h2 id="key-title">设置 DeepSeek API 密钥</h2>

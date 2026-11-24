@@ -1,7 +1,8 @@
 import { examples } from './examples.mjs';
-import { schedule, testLevelLabels } from './workflow.mjs';
+import { schedule, taskStage, testLevelLabels } from './workflow.mjs';
 import { validateDesign, validateTaskLinks, validateTestPlan, designMarkdown, designFeedback } from './pipeline.mjs';
 import { createObservability } from './observability.mjs';
+import { rollbackScope, rollbackTargets } from './interaction.mjs';
 
 const byId = id => document.getElementById(id);
 const directFile = location.protocol === 'file:';
@@ -24,23 +25,49 @@ let active = 'tasks';
 let selected = '';
 let requirementFilter = '';
 let busy = false;
-let pipeline;
+let pipeline, draft;
 let chainView = 'idea';
 let runningStage = '';
+let graphLayout = 'horizontal';
+let inputCollapsed = false;
 const steps = [
   ['idea', '产品想法'], ['requirements', '需求规格'], ['design', '设计规格'],
-  ['schedule', '任务编排'], ['feedback', '设计回填'], ['tests', '测试方案'],
+  ['tests', '测试方案'], ['schedule', '任务编排'], ['feedback', '设计回填'],
 ];
 const stepLabels = new Map(steps);
 const monitor = createObservability({
   request: requestStage, ready: ensureReady, getResult: () => result, getArrangement: () => arrangement,
   download: downloadFile, isBusy: () => busy, setBusy: lock,
+  renderCases: taskCases, openPlan: () => selectWorkspace(false, true),
   adopt: text => {
     inputMode.value = 'idea';
     spec.value = text;
     changeSpec(true);
   },
 });
+
+function selectWorkspace(discussion, focus = false) {
+  byId('workspace').hidden = discussion;
+  byId('discussion-panel').hidden = !discussion;
+  byId('workspace-plan').setAttribute('aria-pressed', String(!discussion));
+  byId('workspace-discussion').setAttribute('aria-pressed', String(discussion));
+  if (!discussion && result && active === 'graph') render();
+  if (focus) byId(discussion ? 'workspace-discussion' : 'workspace-plan').focus();
+}
+
+function showInput(visible) {
+  inputCollapsed = !visible;
+  byId('input-body').hidden = !visible;
+  byId('workspace').classList.toggle('input-collapsed', !visible);
+  const toggle = byId('toggle-input');
+  toggle.setAttribute('aria-expanded', String(visible));
+  toggle.textContent = visible ? '收起输入' : '展开输入';
+}
+
+byId('workspace-plan').addEventListener('click', () => selectWorkspace(false));
+byId('workspace-discussion').addEventListener('click', () => selectWorkspace(true));
+byId('toggle-input').addEventListener('click', () => showInput(inputCollapsed));
+byId('open-activity').addEventListener('click', () => byId('activity-dialog').showModal());
 
 function element(tag, content = '', className = '') {
   const node = document.createElement(tag);
@@ -59,7 +86,7 @@ function modeLabel() {
 }
 
 function runLabel() {
-  if (inputMode.value === 'design') return '运行任务编排 ↗';
+  if (inputMode.value === 'design') return draft ? '继续生成测试方案 ↗' : '运行任务编排 ↗';
   if (pipeline?.requirements && !pipeline.testPlan) return '继续完整流程 ↗';
   return '运行完整流程 ↗';
 }
@@ -87,13 +114,14 @@ function statusMessage(title, body) {
 function changeSpec(preserveDiscussion = false) {
   result = undefined;
   pipeline = undefined;
+  draft = undefined;
   chainView = 'idea';
   if (preserveDiscussion !== true) monitor.reset();
   updateInput();
   run.textContent = runLabel();
   statusMessage('等待运行工作流', inputMode.value === 'idea'
-    ? '输入想法或选择案例，依次生成需求规格、设计规格、任务编排、设计回填和测试方案。'
-    : '输入已有设计规格，查看任务分解和依赖关系。');
+    ? '输入想法或选择案例，生成需求、设计和测试方案，查看实现编排与设计回填。'
+    : '输入已有设计规格，查看编码、测试和评审的依赖关系。');
   renderChain();
 }
 spec.value = examples[0].idea;
@@ -179,7 +207,7 @@ function lock(value) {
 
 async function requestStage(endpoint, body) {
   const labels = {discussion:'讨论提炼',requirements:'想法 → 需求规格',design:'需求 → 设计规格',
-    decompose:'设计 → WBS → 编排', 'test-plan':'设计与任务 → 测试方案'};
+    decompose:'设计 → 开发任务分解', 'test-plan':'测试方案 → 实现任务集'};
   const label = labels[endpoint] || endpoint;
   const started = performance.now();
   monitor.log(label, '开始', '已提交 DeepSeek API 请求');
@@ -219,21 +247,29 @@ async function runPipeline(idea) {
     pipeline.design = data.design;
     chainView = 'design';
   }
-  const {requirements, design} = pipeline;
-  if (!result) {
+  await runImplementation({requirements: pipeline.requirements, design: pipeline.design});
+}
+
+async function runImplementation(source) {
+  if (!draft) {
     runningStage = 'schedule';
     renderChain();
-    statusMessage('正在分解并编排任务', '作业二 · 按设计条目分解任务，计算依赖和批次，然后回填到设计规格。');
-    const data = await requestStage('decompose', {requirements, design});
-    show({...data, spec: designMarkdown(requirements, design), pipeline});
-    monitor.log('任务编排', '完成', result.plan.tasks.length + ' 项任务，' + arrangement.rounds.length + ' 个执行批次');
-    chainView = 'feedback';
+    statusMessage('正在分解开发任务', 'PM Agent 正在按设计规格分解模块、接口契约和编码任务。');
+    draft = (await requestStage('decompose', {...source, draftOnly: true})).plan;
   }
   runningStage = 'tests';
   renderChain();
-  const data = await requestStage('test-plan', {requirements, design, plan: result.plan});
-  pipeline.testPlan = data.testPlan;
-  chainView = 'tests';
+  statusMessage('正在制定测试方案', '用例通过校验后，和编码、评审一起进入任务集，再计算执行批次。');
+  const {testPlan, ...data} = await requestStage('test-plan', {...source, plan: draft, draftOnly: true});
+  if (pipeline) {
+    pipeline.testPlan = testPlan;
+    chainView = 'schedule';
+  }
+  show({...data, spec: source.spec ?? designMarkdown(source.requirements, source.design),
+    ...(pipeline ? {pipeline} : {testPlan})});
+  draft = undefined;
+  monitor.log('实现阶段编排', '完成', result.plan.tasks.length + ' 项编码、测试、评审与设计任务，'
+    + arrangement.rounds.length + ' 个执行批次');
 }
 
 async function ensureReady() {
@@ -258,7 +294,7 @@ run.addEventListener('click', async () => {
     return;
   }
   if (!await ensureReady()) return;
-  if (result && (inputMode.value === 'design' || pipeline?.testPlan)) {
+  if (result) {
     pipeline = undefined;
     chainView = 'idea';
     result = undefined;
@@ -270,14 +306,12 @@ run.addEventListener('click', async () => {
     if (inputMode.value === 'idea') {
       await runPipeline(spec.value);
     } else {
-      statusMessage('PM Agent 正在分解任务', 'DeepSeek 正在根据设计规格生成开发任务，编排器随后计算批次。');
-      const data = await requestStage('decompose', {spec: spec.value});
-      show({...data, spec: spec.value});
+      await runImplementation({spec: spec.value});
     }
   } catch (error) {
     const title = runningStage ? stepLabels.get(runningStage) + '生成失败' : '生成失败';
-    if (result) byId('input-error').textContent = title + '。' + error.message;
-    else statusMessage(title, error.message);
+    byId('input-error').textContent = title + '。' + error.message;
+    statusMessage(title, error.message);
     if (error instanceof TypeError) await checkStatus();
   } finally {
     runningStage = '';
@@ -292,7 +326,7 @@ replay.addEventListener('change', async () => {
   if (!chosen) return;
   try {
     if (chosen.size > 1024 * 1024) throw new Error('结果文件最多 1 MB。');
-    const {provider, spec: source, plan, model, generatedAt, pipeline: chain, observation} = JSON.parse(await chosen.text());
+    const {provider, spec: source, plan, model, generatedAt, pipeline: chain, observation, testPlan} = JSON.parse(await chosen.text());
     if (busy) return;
     const input = chain === undefined ? source : chain?.idea;
     if (provider !== 'deepseek' || typeof input !== 'string' || input.trim().length < 15 ||
@@ -310,13 +344,18 @@ replay.addEventListener('change', async () => {
       if (chain.testPlan !== undefined) validateTestPlan(chain.testPlan, chain.design, restoredPlan);
     } else {
       schedule(restoredPlan, Number(capacity.value));
+      if (testPlan !== undefined) validateTestPlan(testPlan, undefined, restoredPlan);
+    }
+    if (restoredPlan.tasks.some(task => task.test?.cases) && !(chain?.testPlan ?? testPlan)) {
+      throw new Error('结果缺少与测试任务绑定的测试方案');
     }
     const restoredArrangement = schedule(restoredPlan, Number(capacity.value));
     monitor.restore(observation, restoredPlan, restoredArrangement);
     pipeline = chain;
+    draft = undefined;
     inputMode.value = chain ? 'idea' : 'design';
     chainView = chain ? 'design' : 'idea';
-    show({provider, spec: sourceDesign, plan: restoredPlan, model, generatedAt, pipeline, mode: 'imported'});
+    show({provider, spec: sourceDesign, plan: restoredPlan, model, generatedAt, pipeline, testPlan, mode: 'imported'});
     spec.value = input;
     updateInput();
     run.textContent = runLabel();
@@ -353,16 +392,19 @@ tabs.forEach(button => button.addEventListener('click', () => {
 }));
 
 byId('go-spec').addEventListener('click', () => {
+  selectWorkspace(false);
   if (pipeline?.design) {
     openChain('design');
     return;
   }
+  showInput(true);
   byId('input-title').scrollIntoView({block: 'start'});
   if (!busy) spec.focus({preventScroll: true});
 });
 
 function openResults(viewName) {
   active = viewName;
+  if (byId('workspace').hidden) selectWorkspace(false);
   if (result) render();
   else if (!busy) {
     const showTasks = viewName === 'tasks';
@@ -418,8 +460,9 @@ function renderChain() {
   }));
   const content = byId('chain-content');
   content.replaceChildren();
+  content.scrollTop = 0;
   if (chainView === 'schedule') {
-    content.append(element('p', '设计规格 → 开发任务 → 依赖图和执行批次。请在下方切换查看。', 'hint'));
+    content.append(element('p', '编码、单元测试、联调、评审与验收已纳入同一任务集。', 'hint'));
     return;
   }
   if (chainView === 'idea') {
@@ -451,16 +494,14 @@ function renderChain() {
       const link = element('button', '查看测试任务 ' + test.task, 'task-link');
       link.type = 'button';
       link.addEventListener('click', () => locateGraphTask(test.task));
-      const list = element('ol', '', 'test-steps');
-      test.steps.forEach(step => list.append(element('li', step)));
       const batch = arrangement.rounds.findIndex(ids => ids.includes(test.task)) + 1;
       const level = tasks.get(test.task).test?.level;
       card.append(element('h4', test.id + ' · ' + test.title),
         element('p', (level ? testLevelLabels[level] + ' · ' : '') +
-          test.requirements.join('、') + ' → ' + test.design + ' → ' + test.task + ' · 第 ' + batch + ' 批',
+          test.requirements.join('、') + ' → ' + (test.designs?.join('、') ?? test.design) +
+          ' → ' + test.task + ' · 第 ' + batch + ' 批',
           'hint'),
-        element('p', '前置条件：' + test.setup), list,
-        element('p', '预期结果：' + test.expected), link);
+        ...caseInstructions(test), link);
       content.append(card);
     }
     return;
@@ -504,6 +545,23 @@ function metrics() {
   }));
 }
 
+function caseInstructions(test) {
+  const list = element('ol', '', 'test-steps');
+  test.steps.forEach(step => list.append(element('li', step)));
+  return [element('p', '前置条件：' + test.setup), list, element('p', '预期结果：' + test.expected)];
+}
+
+function taskCases(task) {
+  const plan = result.pipeline?.testPlan ?? result.testPlan;
+  const cases = plan?.cases.filter(item => item.task === task.id);
+  if (!cases?.length) return [];
+  return cases.map(test => {
+    const details = element('details', '', 'task-test-case');
+    details.append(element('summary', test.id + ' · ' + test.title), ...caseInstructions(test));
+    return details;
+  });
+}
+
 function taskCard(task, full = false, interactive = false) {
   const card = element(interactive ? 'button' : 'article', '', 'task');
   
@@ -512,9 +570,12 @@ function taskCard(task, full = false, interactive = false) {
     if (task.role === '后端') card.style.borderLeft = '4px solid #e74c3c';
     if (task.role === '测试') card.style.borderLeft = '4px solid #f39c12';
     if (task.role === '产品设计') card.style.borderLeft = '4px solid #9b59b6';
+    if (task.role === '评审') card.style.borderLeft = '4px solid #23836a';
   }
 
-  card.append(element('span', task.id + ' · ' + task.role + ' · ' + task.requirements.join('、'), 'task-meta'),
+  const stage = taskStage(task);
+  card.append(element('span', task.id + ' · ' + (stage === '编码' ? '编码 / ' + task.role : stage) +
+    ' · ' + task.requirements.join('、'), 'task-meta'),
     element('strong', task.title));
     
   if (full) {
@@ -523,7 +584,8 @@ function taskCard(task, full = false, interactive = false) {
       element('p', '交付：' + task.output),
       element('p', '验收：' + task.acceptance));
     if (result.pipeline) card.append(element('p', '设计来源：' + task.designs.join('、')));
-    if (task.test) card.append(element('p', '测试目标及失败定位范围：' + task.test.targets.join('、')));
+    if (task.test) card.append(element('p', '测试目标及失败定位范围：' + task.test.targets.join('、')), ...taskCases(task));
+    if (task.review) card.append(element('p', '评审对应编码：' + task.review.target));
     const added = arrangement.edges.filter(edge => edge.to === task.id && !task.inputs.includes(edge.artifact));
     if (added.length) card.append(element('p', '编排补齐的输入：' + added.map(edge => edge.artifact).join('、')));
   }
@@ -708,6 +770,23 @@ function spreadPorts(routes, endpoint, other, coordinate) {
 }
 
 function showGraph(tasksById) {
+  const vertical = graphLayout === 'vertical';
+  const layouts = element('div', '', 'graph-layouts');
+  layouts.setAttribute('aria-label', '依赖图布局');
+  for (const [id, label] of [['horizontal', '横向依赖图'], ['vertical', '纵向执行流程']]) {
+    const toggle = element('button', label);
+    toggle.type = 'button';
+    toggle.dataset.layout = id;
+    toggle.setAttribute('aria-pressed', String(id === graphLayout));
+    toggle.addEventListener('click', () => {
+      if (graphLayout === id) return;
+      graphLayout = id;
+      render();
+      view.querySelector('[data-layout="' + id + '"]').focus({preventScroll: true});
+    });
+    layouts.append(toggle);
+  }
+  view.append(layouts);
   const toolbar = element('div', '', 'graph-toolbar');
   const explanation = element('p', '', 'hint');
   explanation.setAttribute('role', 'status');
@@ -717,8 +796,8 @@ function showGraph(tasksById) {
   view.append(toolbar);
   const scroll = element('div', '', 'graph-scroll');
   scroll.tabIndex = 0;
-  scroll.setAttribute('aria-label', '可横向滚动的任务依赖图');
-  const graph = element('div', '', 'graph');
+  scroll.setAttribute('aria-label', vertical ? '按执行批次从上到下的流程图' : '可横向滚动的任务依赖图');
+  const graph = element('div', '', vertical ? 'graph graph-vertical' : 'graph');
   const canvas = element('canvas');
   canvas.setAttribute('aria-hidden', 'true');
   graph.append(canvas);
@@ -728,17 +807,25 @@ function showGraph(tasksById) {
   const columns = [];
   const batches = new Map(arrangement.rounds.flatMap((ids, batch) => ids.map(id => [id, batch])));
   const overview = overviewEdges(arrangement.edges, [...batches.keys()]);
+  const parallel = arrangement.rounds.filter(batch => batch.length > 1).length;
+  const reason = result.plan.serialJustification;
+  if (typeof reason === 'string' && reason) view.append(element('p', '编码需串行：' + reason, 'hint'));
+  const graphArea = element('div', '', vertical ? 'graph-area vertical-area' : 'graph-area');
 
   function draw() {
     const edges = selected
       ? arrangement.edges.filter(edge => edge.from === selected || edge.to === selected)
       : overview;
     const bounds = graph.getBoundingClientRect();
+    const begin = box => vertical ? box.top - bounds.top : box.left - bounds.left;
+    const endOf = box => vertical ? box.bottom - bounds.top : box.right - bounds.left;
+    const acrossEnd = box => vertical ? box.right - bounds.left : box.bottom - bounds.top;
     const nodes = new Map([...buttons].map(([id, button]) => {
       const box = button.getBoundingClientRect();
+      const breadth = vertical ? box.width : box.height;
       return [id, {
-        left: box.left - bounds.left, right: box.right - bounds.left,
-        middle: box.top + box.height / 2 - bounds.top, height: box.height, batch: batches.get(id),
+        left: begin(box), right: endOf(box), middle: acrossEnd(box) - breadth / 2,
+        height: breadth, batch: batches.get(id),
       }];
     }));
     const routes = edges.map(edge => ({edge, start: nodes.get(edge.from), end: nodes.get(edge.to)}));
@@ -758,8 +845,8 @@ function showGraph(tasksById) {
       }
     }
     gutters.forEach((tracks, index) => {
-      const left = columns[index].getBoundingClientRect().right - bounds.left + 8;
-      const right = columns[index + 1].getBoundingClientRect().left - bounds.left - 10;
+      const left = endOf(columns[index].getBoundingClientRect()) + 8;
+      const right = begin(columns[index + 1].getBoundingClientRect()) - 10;
       tracks.sort((a, b) => a.order - b.order || a.route.y1 - b.route.y1 || a.route.y2 - b.route.y2);
       tracks.forEach(({route, key}, lane) => {
         route[key] = left + (right - left) * (lane + 1) / (tracks.length + 1);
@@ -767,15 +854,16 @@ function showGraph(tasksById) {
     });
 
     const rows = [];
-    const belowCards = Math.max(...columns.map(column => column.lastElementChild.getBoundingClientRect().bottom)) - bounds.top;
+    const belowCards = Math.max(...columns.map(column => acrossEnd(column.lastElementChild.getBoundingClientRect()))) + 18;
     longRoutes.sort((a, b) => a.start.batch - b.start.batch || a.end.batch - b.end.batch);
     for (const route of longRoutes) {
       let row = rows.findIndex(end => end < route.start.batch);
       if (row === -1) row = rows.length;
       rows[row] = route.end.batch;
-      route.floor = belowCards + 15 + row * 11;
+      route.floor = belowCards + row * 11;
     }
-    graph.style.paddingBottom = 16 + rows.length * 11 + 'px';
+    const returns = vertical && selected ? rollbackTargets(tasksById.get(selected)) : [];
+    graph.style[vertical ? 'paddingRight' : 'paddingBottom'] = 26 + (rows.length + returns.length) * 11 + 'px';
 
     const ratio = window.devicePixelRatio || 1;
     canvas.width = Math.ceil(graph.clientWidth * ratio);
@@ -785,37 +873,49 @@ function showGraph(tasksById) {
     const context = canvas.getContext('2d');
     context.scale(ratio, ratio);
     context.lineJoin = 'round';
-    for (const {edge, start, end, y1, y2, out, in: entry, floor} of routes) {
-      const x2 = end.left - 2;
-      context.strokeStyle = context.fillStyle = edge.to === selected ? '#376e9e' : '#34745e';
+    function drawRoute(points, color, dashed = false) {
+      const position = ([along, across]) => vertical ? [across, along] : [along, across];
+      const [along, across] = points.at(-1);
+      const direction = Math.sign(along - points.at(-2)[0]);
+      context.strokeStyle = context.fillStyle = color;
       context.lineWidth = 1.6;
+      context.setLineDash(dashed ? [5, 4] : []);
       context.beginPath();
-      context.moveTo(start.right, y1);
-      context.lineTo(out, y1);
-      if (floor !== undefined) {
-        context.lineTo(out, floor);
-        context.lineTo(entry, floor);
-        context.lineTo(entry, y2);
-      } else {
-        context.lineTo(out, y2);
-      }
-      context.lineTo(x2, y2);
+      context.moveTo(...position(points[0]));
+      for (const point of points.slice(1)) context.lineTo(...position(point));
       context.stroke();
       context.beginPath();
-      context.moveTo(x2, y2);
-      context.lineTo(x2 - 6, y2 - 4);
-      context.lineTo(x2 - 6, y2 + 4);
+      context.moveTo(...position([along, across]));
+      context.lineTo(...position([along - direction * 6, across - 4]));
+      context.lineTo(...position([along - direction * 6, across + 4]));
       context.fill();
     }
+    for (const {edge, start, end, y1, y2, out, in: entry, floor} of routes) {
+      const points = [[start.right, y1], [out, y1]];
+      if (floor !== undefined) points.push([out, floor], [entry, floor], [entry, y2]);
+      else points.push([out, y2]);
+      points.push([end.left - 2, y2]);
+      drawRoute(points, edge.to === selected ? '#376e9e' : '#34745e');
+    }
+    returns.forEach((id, index) => {
+      const from = nodes.get(selected);
+      const to = nodes.get(id);
+      const lane = belowCards + (rows.length + index) * 11;
+      const leave = endOf(columns[from.batch].getBoundingClientRect()) + 16 + index * 4;
+      const enter = endOf(columns[to.batch].getBoundingClientRect()) + 19;
+      drawRoute([[from.right, from.middle + 6], [leave, from.middle + 6], [leave, lane],
+        [enter, lane], [enter, to.middle + 6], [to.right + 3, to.middle + 6]], '#b56726', true);
+    });
   }
 
   function select(id) {
     selected = id;
+    graphArea.classList.toggle('has-selection', Boolean(id));
     for (const [taskId, button] of buttons) button.setAttribute('aria-pressed', String(id === taskId));
     reset.hidden = !id;
     if (!id) {
       const hidden = arrangement.edges.length - overview.length;
-      explanation.textContent = '总览显示 ' + overview.length + ' 条连线。' +
+      explanation.textContent = parallel + ' 批含并行任务。总览显示 ' + overview.length + ' 条连线。' +
         (hidden ? '另有 ' + hidden + ' 条可通过中间任务追溯。' : '') + '点击任务可查看它的全部直接依赖。';
       detail.replaceChildren();
       draw();
@@ -825,6 +925,21 @@ function showGraph(tasksById) {
     explanation.textContent = id + ' 的 ' + count + ' 条连线 · 蓝色为前置依赖，绿色指向后续任务。';
     const task = tasksById.get(id);
     const card = taskCard(task, true);
+    const targets = rollbackTargets(task);
+    if (targets.length) {
+      if (vertical) explanation.textContent += ' 橙色虚线表示失败时可回退的编码。';
+      const info = element('div', '', 'graph-rollback');
+      info.append(element('h3', '失败回退', 'dependency-heading'));
+      for (const target of targets) {
+        const change = rollbackScope(target, arrangement);
+        info.append(element('p', target + ' · ' + tasksById.get(target).title + ' · 影响 ' + change.length + ' 项后续任务'));
+      }
+      const openExecution = element('button', '前往执行与交互', 'task-link');
+      openExecution.type = 'button';
+      openExecution.addEventListener('click', () => openResults('execution'));
+      info.append(openExecution);
+      card.append(info);
+    }
     for (const [caption, here, other] of [
       ['前置任务', 'to', 'from'], ['后续任务', 'from', 'to'],
     ]) {
@@ -857,7 +972,9 @@ function showGraph(tasksById) {
 
   arrangement.rounds.forEach((ids, index) => {
     const column = element('section', '', 'column');
-    column.append(element('h3', '第 ' + (index + 1) + ' 批'));
+    const batchLabel = element('h3', '第 ' + (index + 1) + ' 批');
+    if (vertical && ids.length > 1) batchLabel.append(element('span', ids.length + ' 项可并行'));
+    column.append(batchLabel);
     for (const id of ids) {
       const button = taskCard(tasksById.get(id), false, true);
       button.id = 'node-' + id;
@@ -870,7 +987,8 @@ function showGraph(tasksById) {
     graph.append(column);
     columns.push(column);
   });
-  view.append(scroll, detail);
+  graphArea.append(scroll, detail);
+  view.append(graphArea);
   reset.addEventListener('click', () => {
     const node = buttons.get(selected);
     select('');
@@ -929,14 +1047,16 @@ byId('report').addEventListener('click', () => {
     lines.push('- **' + req.id + '** ' + req.text,
       '  - 验收：' + req.acceptance, '  - 关联任务：' + links.join('、'));
   }
-  lines.push('', '## 开发任务', '');
+  lines.push('', '## 实现阶段任务集', '');
   for (const task of plan.tasks) {
     lines.push('### ' + task.id + ' · ' + task.title, '',
-      '- 角色：' + task.role, '- 关联需求：' + task.requirements.join('、'),
+      '- 角色：' + task.role, '- 工作类型：' + taskStage(task), '- 关联需求：' + task.requirements.join('、'),
       '- 交付物：' + task.output, '- 验收：' + task.acceptance);
     if (result.pipeline) lines.push('- 设计来源：' + task.designs.join('、'));
     if (task.test) lines.push('- 测试层次：' + testLevelLabels[task.test.level],
-      '- 测试目标及失败定位范围：' + task.test.targets.join('、'));
+      '- 测试目标及失败定位范围：' + task.test.targets.join('、'),
+      ...(task.test.cases ? ['- 测试方案用例：' + task.test.cases.join('、')] : []));
+    if (task.review) lines.push('- 评审对象：' + task.review.target);
     lines.push('');
   }
   lines.push('## 任务依赖', '');
@@ -948,7 +1068,7 @@ byId('report').addEventListener('click', () => {
   arrangement.rounds.forEach((ids, index) => lines.push(
     '- 第 ' + (index + 1) + ' 批 · ' + ids.map(id => id + ' ' + byTask.get(id).title).join('、')));
   if (result.pipeline) {
-    const {idea, requirements, design, testPlan} = result.pipeline;
+    const {idea, requirements, design} = result.pipeline;
     lines.push('', '## 原始产品想法', '', idea, '', '## 作业一需求规格的目标与范围', '',
       '- 目标：' + requirements.goal, '- 范围：' + requirements.scope, '', '## 编排回填到设计规格', '');
     for (const part of designFeedback(design, plan, arrangement)) {
@@ -960,18 +1080,20 @@ byId('report').addEventListener('click', () => {
       }
       lines.push('');
     }
-    if (testPlan) {
-      lines.push('## 测试方案', '', testPlan.strategy, '');
-      for (const test of testPlan.cases) {
-        const batch = arrangement.rounds.findIndex(ids => ids.includes(test.task)) + 1;
-        const level = byTask.get(test.task).test?.level;
-        lines.push('### ' + test.id + ' · ' + test.title, '',
-          '关联：' + (level ? testLevelLabels[level] + ' · ' : '') +
-          test.requirements.join('、') + ' → ' + test.design + ' → ' + test.task + ' · 第 ' + batch + ' 批',
-          '', '前置条件：' + test.setup, '');
-        test.steps.forEach((step, index) => lines.push((index + 1) + '. ' + step));
-        lines.push('', '预期结果：' + test.expected, '');
-      }
+  }
+  const testPlan = result.pipeline?.testPlan ?? result.testPlan;
+  if (testPlan) {
+    lines.push('## 测试方案', '', testPlan.strategy, '');
+    for (const test of testPlan.cases) {
+      const batch = arrangement.rounds.findIndex(ids => ids.includes(test.task)) + 1;
+      const level = taskStage(byTask.get(test.task));
+      lines.push('### ' + test.id + ' · ' + test.title, '',
+        '关联：' + level + ' · ' +
+        [test.requirements.join('、'), test.designs?.join('、') ?? test.design, test.task].filter(Boolean)
+          .join(' → ') + ' · 第 ' + batch + ' 批',
+        '', '前置条件：' + test.setup, '');
+      test.steps.forEach((step, index) => lines.push((index + 1) + '. ' + step));
+      lines.push('', '预期结果：' + test.expected, '');
     }
   }
   lines.push('', result.pipeline ? '## 送入编排的设计规格' : '## 原始 Design Spec', '',
@@ -980,6 +1102,6 @@ byId('report').addEventListener('click', () => {
 });
 
 byId('startup').hidden = true;
-for (const id of ['workspace', 'mast-actions', 'flow']) byId(id).hidden = false;
+for (const id of ['workspace', 'workspace-nav', 'mast-actions', 'flow']) byId(id).hidden = false;
 changeSpec();
 void checkStatus();

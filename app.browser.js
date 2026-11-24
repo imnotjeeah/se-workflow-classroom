@@ -77,9 +77,16 @@
   ];
 
   // workflow.mjs
-  var roles = ["\u4EA7\u54C1\u8BBE\u8BA1", "\u524D\u7AEF", "\u540E\u7AEF", "\u6D4B\u8BD5"];
-  var testLevelLabels = { unit: "\u5355\u5143\u6D4B\u8BD5", integration: "\u96C6\u6210\u6D4B\u8BD5", e2e: "\u7AEF\u5230\u7AEF\u9A8C\u6536" };
+  var roles = ["\u4EA7\u54C1\u8BBE\u8BA1", "\u524D\u7AEF", "\u540E\u7AEF", "\u6D4B\u8BD5", "\u8BC4\u5BA1"];
+  var testLevelLabels = { unit: "\u5355\u5143\u6D4B\u8BD5", integration: "\u8054\u8C03\u6D4B\u8BD5", e2e: "\u7AEF\u5230\u7AEF\u9A8C\u6536" };
   var developmentRoles = /* @__PURE__ */ new Set(["\u524D\u7AEF", "\u540E\u7AEF"]);
+  var isImplementation = (task) => developmentRoles.has(task?.role) && task.kind !== "contract";
+  function taskStage(task) {
+    if (task.review) return "\u8BC4\u5BA1";
+    if (task.test) return testLevelLabels[task.test.level];
+    if (task.role === "\u6D4B\u8BD5") return "\u6D4B\u8BD5";
+    return isImplementation(task) ? "\u7F16\u7801" : "\u8BBE\u8BA1\u4E0E\u5951\u7EA6";
+  }
   function check(condition, message) {
     if (!condition) throw new Error(message);
   }
@@ -89,7 +96,7 @@
   function validate(plan) {
     check(present(plan?.project), "\u7F3A\u5C11\u9879\u76EE\u540D\u79F0");
     check(Array.isArray(plan.requirements) && plan.requirements.length > 0, "\u7F3A\u5C11\u9700\u6C42");
-    check(Array.isArray(plan.tasks) && plan.tasks.length >= 2 && plan.tasks.length <= 24, "\u4EFB\u52A1\u6570\u91CF\u5E94\u5728 2 \u81F3 24 \u4E4B\u95F4");
+    check(Array.isArray(plan.tasks) && plan.tasks.length >= 2 && plan.tasks.length <= 40, "\u4EFB\u52A1\u6570\u91CF\u5E94\u5728 2 \u81F3 40 \u4E4B\u95F4");
     const requirements = /* @__PURE__ */ new Set();
     for (const req of plan.requirements) {
       check(/^R\d+$/.test(req.id) && !requirements.has(req.id) && present(req.text) && present(req.acceptance), "\u9700\u6C42\u7F16\u53F7\u91CD\u590D\u3001\u65E0\u6548\u6216\u7F3A\u5C11\u9A8C\u6536\u6807\u51C6");
@@ -110,13 +117,23 @@
       tasksById.set(task.id, task);
     }
     for (const task of plan.tasks) {
+      if (task.review !== void 0 || task.role === "\u8BC4\u5BA1") {
+        const target = tasksById.get(task.review?.target);
+        check(
+          task.role === "\u8BC4\u5BA1" && isImplementation(target) && task.inputs.includes(target.output),
+          task.id + " \u7684\u8BC4\u5BA1\u5FC5\u987B\u5173\u8054\u5BF9\u5E94\u7684\u7F16\u7801\u4EA4\u4ED8\u7269"
+        );
+      }
       if (task.test === void 0) continue;
       const { level, targets } = task.test ?? {};
       check(task.role === "\u6D4B\u8BD5" && Object.hasOwn(testLevelLabels, level) && Array.isArray(targets) && new Set(targets).size === targets.length && targets.length >= (level === "integration" ? 2 : 1) && (level !== "unit" || targets.length === 1), task.id + " \u7684\u6D4B\u8BD5\u5C42\u6B21\u6216\u5B9E\u73B0\u76EE\u6807\u65E0\u6548");
       check(targets.every((id) => {
         const target = tasksById.get(id);
-        return developmentRoles.has(target?.role) && task.inputs.includes(target.output);
+        return isImplementation(target) && task.inputs.includes(target.output);
       }), task.id + " \u5FC5\u987B\u4F9D\u8D56\u5176\u6D4B\u8BD5\u76EE\u6807\u7684\u5B9E\u73B0\u4EA4\u4ED8\u7269");
+      if (task.test.cases !== void 0) {
+        check(Array.isArray(task.test.cases) && task.test.cases.length > 0 && new Set(task.test.cases).size === task.test.cases.length && task.test.cases.every((id) => /^TC[1-9]\d*$/.test(id)), task.id + " \u7684\u6D4B\u8BD5\u7528\u4F8B\u7F16\u53F7\u65E0\u6548");
+      }
     }
     check([...requirements].every((id) => covered.has(id) && tested.has(id)), "\u6BCF\u6761\u9700\u6C42\u90FD\u5E94\u6709\u975E\u6D4B\u8BD5\u4EFB\u52A1\u548C\u6D4B\u8BD5\u4EFB\u52A1\u8986\u76D6");
   }
@@ -225,17 +242,21 @@
   function validateTestPlan(value, design, plan) {
     check2(text(value?.strategy, 1e3), "\u6D4B\u8BD5\u65B9\u6848\u7F3A\u5C11\u8303\u56F4\u4E0E\u65B9\u6CD5");
     entries(value.cases, "TC", "\u6D4B\u8BD5\u65B9\u6848", 48);
-    const designById = new Map(design.components.map((part) => [part.id, part]));
+    const designById = new Map((design?.components ?? []).map((part) => [part.id, part]));
     const testers = new Map(plan.tasks.filter((task) => task.role === "\u6D4B\u8BD5").map((task) => [task.id, task]));
     const coveredRequirements = /* @__PURE__ */ new Set();
     const coveredDesigns = /* @__PURE__ */ new Set();
     const coveredTasks = /* @__PURE__ */ new Set();
     for (const test of value.cases) {
-      const part = designById.get(test.design);
       const task = testers.get(test.task);
-      check2(part && task?.designs.includes(part.id), test.id + " \u7684\u8BBE\u8BA1\u7F16\u53F7\u4E0E\u6D4B\u8BD5\u4EFB\u52A1\u4E0D\u5339\u914D");
+      const parts = test.designs ?? (test.design ? [test.design] : []);
       check2(
-        references(test.requirements, new Set(part.requirements.filter((id) => task.requirements.includes(id)))),
+        task && (design ? references(parts, designById) && parts[0] === test.design && parts.every((id) => task.designs.includes(id)) : !parts.length && test.design === void 0),
+        test.id + " \u7684\u8BBE\u8BA1\u7F16\u53F7\u4E0E\u6D4B\u8BD5\u4EFB\u52A1\u4E0D\u5339\u914D"
+      );
+      const applicable = new Set(parts.flatMap((id) => designById.get(id).requirements));
+      check2(
+        references(test.requirements, new Set(task.requirements.filter((id) => !design || applicable.has(id)))) && parts.every((id) => designById.get(id).requirements.some((req) => test.requirements.includes(req))),
         test.id + " \u5F15\u7528\u4E86\u4E0E\u8BBE\u8BA1\u6216\u6D4B\u8BD5\u4EFB\u52A1\u65E0\u5173\u7684\u9700\u6C42"
       );
       check2(
@@ -243,7 +264,7 @@
         test.id + " \u7F3A\u5C11\u6807\u9898\u3001\u524D\u7F6E\u6761\u4EF6\u3001\u53EF\u6267\u884C\u6B65\u9AA4\u6216\u9884\u671F\u7ED3\u679C"
       );
       test.requirements.forEach((id) => coveredRequirements.add(id));
-      coveredDesigns.add(part.id);
+      parts.forEach((id) => coveredDesigns.add(id));
       coveredTasks.add(task.id);
     }
     check2(plan.requirements.every((req) => coveredRequirements.has(req.id)), "\u5B58\u5728\u672A\u88AB\u7528\u4F8B\u8986\u76D6\u7684\u9700\u6C42");
@@ -251,6 +272,17 @@
       coveredDesigns.size === designById.size && coveredTasks.size === testers.size,
       "\u6BCF\u9879\u8BBE\u8BA1\u53CA\u6D4B\u8BD5\u4EFB\u52A1\u90FD\u9700\u8981\u5173\u8054\u6D4B\u8BD5\u7528\u4F8B"
     );
+    for (const task of testers.values()) {
+      if (!task.test?.cases) continue;
+      const cases = value.cases.filter((test) => test.task === task.id);
+      const ids = cases.map((test) => test.id);
+      check2(
+        ids.length === task.test.cases.length && task.test.cases.every((id) => ids.includes(id)),
+        task.id + " \u7684\u7528\u4F8B\u6E05\u5355\u4E0E\u6D4B\u8BD5\u65B9\u6848\u4E0D\u4E00\u81F4"
+      );
+      const covered = new Set(cases.flatMap((test) => test.requirements));
+      check2(task.requirements.every((id) => covered.has(id)), task.id + " \u7684\u7528\u4F8B\u672A\u8986\u76D6\u4EFB\u52A1\u7684\u5168\u90E8\u9700\u6C42");
+    }
   }
   function designMarkdown(requirements, design) {
     const lines = [
@@ -336,12 +368,15 @@
     }
     return [...affected].slice(1);
   }
-  function rollbackTask(test, target, note, runtime, arrangement2) {
-    if (!test.test?.targets.includes(target) || !arrangement2.dependencies[test.id]?.includes(target)) {
-      throw new Error("\u8BF7\u9009\u62E9\u8BE5\u6D4B\u8BD5\u5B9E\u9645\u4F9D\u8D56\u7684\u5B9E\u73B0\u4EFB\u52A1");
+  function rollbackTargets(task) {
+    return task.test?.targets ?? (task.review ? [task.review.target] : []);
+  }
+  function rollbackTask(checkpoint, target, note, runtime, arrangement2) {
+    if (!rollbackTargets(checkpoint).includes(target) || !arrangement2.dependencies[checkpoint.id]?.includes(target)) {
+      throw new Error("\u8BF7\u9009\u62E9\u8BE5\u6D4B\u8BD5\u6216\u8BC4\u5BA1\u5B9E\u9645\u4F9D\u8D56\u7684\u5B9E\u73B0\u4EFB\u52A1");
     }
-    if (runtime[test.id]?.status !== "failed" || runtime[target]?.status !== "done") {
-      throw new Error("\u6D4B\u8BD5\u987B\u5904\u4E8E\u5931\u8D25\u5F85\u5904\u7406\u72B6\u6001\uFF0C\u4E14\u5B9E\u73B0\u4EFB\u52A1\u5DF2\u4EA4\u4ED8");
+    if (runtime[checkpoint.id]?.status !== "failed" || runtime[target]?.status !== "done") {
+      throw new Error("\u6D4B\u8BD5\u6216\u8BC4\u5BA1\u987B\u5904\u4E8E\u5931\u8D25\u5F85\u5904\u7406\u72B6\u6001\uFF0C\u4E14\u5B9E\u73B0\u4EFB\u52A1\u5DF2\u4EA4\u4ED8");
     }
     if (typeof note !== "string" || !note.trim() || note.length > 2e3) {
       throw new Error("\u8BF7\u586B\u5199\u5B9A\u4F4D\u4F9D\u636E\u6216\u5931\u8D25\u73B0\u8C61");
@@ -355,7 +390,7 @@
         time,
         action,
         note: note.trim(),
-        test: test.id,
+        test: checkpoint.id,
         target
       }] };
     }
@@ -392,6 +427,110 @@
     }
   }
 
+  // consensus.mjs
+  var stanceLabels = { agree: "\u540C\u610F", object: "\u53CD\u5BF9", reserve: "\u4FDD\u7559\u610F\u89C1" };
+  function requireValue(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function cleanText(value, limit, message) {
+    requireValue(typeof value === "string" && value.trim().length > 0 && value.trim().length <= limit, message);
+    return value.trim();
+  }
+  function discussionParticipants(transcript) {
+    const names = transcript.split(/\r?\n/).map((line) => /^\s*([^：:\r\n]{1,50})[：:]/.exec(line)?.[1].trim());
+    return [...new Set(names.filter(Boolean))];
+  }
+  function acknowledgedAll(discussion) {
+    const round = discussion.rounds?.at(-1);
+    return Boolean(round && discussion.participants.every((name) => round.votes.some((vote) => vote.participant === name && vote.stance === "agree")));
+  }
+  function proposalText(round) {
+    return [round.proposal, ...Object.entries(round.resolutions).map(([id, answer]) => id + " \u7684\u5171\u8BC6\u51B3\u5B9A\uFF1A" + answer)].join("\n");
+  }
+  function startConsensusRound(discussion, { participants, proposal, resolutions, responses }) {
+    requireValue(!discussion.confirmed, "\u5171\u540C\u7406\u89E3\u5DF2\u7ECF\u786E\u8BA4");
+    const history = discussion.rounds ?? [];
+    requireValue(history.length < 40, "\u8BA8\u8BBA\u8BB0\u5F55\u6700\u591A\u652F\u6301 40 \u8F6E");
+    const previous = history.at(-1);
+    const names = previous ? discussion.participants : participants;
+    requireValue(Array.isArray(names) && names.length >= 2 && names.length <= 30, "\u8BF7\u767B\u8BB0 2 \u81F3 30 \u4F4D\u53C2\u4E0E\u8005");
+    const roster = names.map((name) => cleanText(name, 50, "\u53C2\u4E0E\u8005\u540D\u79F0\u9700\u5728 1 \u81F3 50 \u5B57\u4E4B\u95F4"));
+    requireValue(new Set(roster).size === roster.length, "\u53C2\u4E0E\u8005\u540D\u79F0\u987B\u552F\u4E00");
+    const summary = cleanText(proposal, 2e3, "\u8BF7\u586B\u5199\u672C\u8F6E\u51B3\u7B56\u63D0\u6848\uFF0C\u6700\u591A 2000 \u5B57");
+    const decisions = Object.fromEntries(discussion.points.filter((point) => point.kind === "open").map((point) => [
+      point.id,
+      cleanText(resolutions?.[point.id], 500, "\u8BF7\u586B\u5199 " + point.id + " \u7684\u62DF\u8BAE\u51B3\u5B9A\uFF0C\u6700\u591A 500 \u5B57")
+    ]));
+    const objections = (previous?.votes ?? []).filter((vote) => vote.stance !== "agree");
+    const replies = Object.fromEntries(objections.map((vote) => [
+      vote.participant,
+      cleanText(
+        Object.hasOwn(responses ?? {}, vote.participant) ? responses[vote.participant] : void 0,
+        500,
+        "\u8BF7\u5148\u56DE\u5E94 " + vote.participant + " \u7684\u610F\u89C1\uFF0C\u6700\u591A 500 \u5B57"
+      )
+    ]));
+    const round = {
+      number: history.length + 1,
+      proposal: summary,
+      resolutions: decisions,
+      responses: replies,
+      votes: [],
+      openedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    const input = proposalText(round);
+    requireValue(input.length >= 15 && input.length <= 4e3, "\u63D0\u6848\u4E0E\u5206\u6B67\u5904\u7406\u5408\u8BA1\u9700\u5728 15 \u81F3 4000 \u5B57\u4E4B\u95F4");
+    return { ...discussion, participants: roster, rounds: [...history, round] };
+  }
+  function registerStance(discussion, { participant, stance, point, note }) {
+    const round = discussion.rounds?.at(-1);
+    requireValue(round && !discussion.confirmed, "\u8BF7\u5148\u5F00\u542F\u53EF\u767B\u8BB0\u7684\u786E\u8BA4\u8F6E\u6B21");
+    requireValue(discussion.participants.includes(participant), "\u8BF7\u9009\u62E9\u672C\u8F6E\u53C2\u4E0E\u8005");
+    requireValue(Object.hasOwn(stanceLabels, stance), "\u8BF7\u9009\u62E9\u7ACB\u573A");
+    requireValue(!round.votes.some((vote2) => vote2.participant === participant), "\u8FD9\u4F4D\u53C2\u4E0E\u8005\u5728\u672C\u8F6E\u5DF2\u6709\u8BB0\u5F55");
+    const pointId = stance === "agree" ? "" : point;
+    requireValue(pointId === "" || discussion.points.some((item) => item.id === pointId), "\u8BF7\u9009\u62E9\u6709\u6548\u7684\u8BA8\u8BBA\u8981\u70B9");
+    const reason = stance === "agree" && typeof note === "string" && !note.trim() ? "" : cleanText(note, 500, "\u8BF7\u586B\u5199\u610F\u89C1\uFF0C\u6700\u591A 500 \u5B57");
+    const vote = { participant, stance, point: pointId, note: reason, time: (/* @__PURE__ */ new Date()).toISOString() };
+    return { ...discussion, rounds: [...discussion.rounds.slice(0, -1), { ...round, votes: [...round.votes, vote] }] };
+  }
+  function confirmConsensus(discussion) {
+    requireValue(!discussion.confirmed && acknowledgedAll(discussion), "\u672C\u8F6E\u5168\u4F53\u53C2\u4E0E\u8005\u540C\u610F\u540E\u624D\u53EF\u786E\u8BA4\u5171\u8BC6");
+    const round = discussion.rounds.at(-1);
+    return { text: proposalText(round), discussion: {
+      ...discussion,
+      confirmed: true,
+      confirmedText: round.proposal,
+      resolutions: round.resolutions,
+      confirmedRound: round.number
+    } };
+  }
+  function validateConsensus(record) {
+    if (record.rounds === void 0) return;
+    requireValue(Array.isArray(record.rounds) && record.rounds.length > 0, "\u8F6E\u6B21\u8BB0\u5F55\u65E0\u6548");
+    let replay2 = { ...record, rounds: [], confirmed: false };
+    for (const saved of record.rounds) {
+      requireValue(saved?.number === replay2.rounds.length + 1 && Array.isArray(saved.votes) && typeof saved.openedAt === "string", "\u8F6E\u6B21\u8BB0\u5F55\u65E0\u6548");
+      replay2 = startConsensusRound(replay2, {
+        participants: record.participants,
+        proposal: saved.proposal,
+        resolutions: saved.resolutions,
+        responses: saved.responses
+      });
+      for (const vote of saved.votes) {
+        requireValue(typeof vote?.time === "string" && typeof vote.note === "string", "\u7ACB\u573A\u8BB0\u5F55\u65E0\u6548");
+        replay2 = registerStance(replay2, vote);
+      }
+    }
+    if (record.confirmed) {
+      const final = confirmConsensus(replay2).discussion;
+      requireValue(
+        record.confirmedRound === final.confirmedRound && record.confirmedText === final.confirmedText,
+        "\u5171\u8BC6\u786E\u8BA4\u4E0E\u6700\u540E\u4E00\u8F6E\u7ACB\u573A\u4E0D\u4E00\u81F4"
+      );
+    }
+  }
+
   // observability.mjs
   var actionLabels = { start: "\u5F00\u59CB\u6267\u884C", complete: "\u786E\u8BA4\u4EA4\u4ED8", ask: "\u8BF7\u6C42\u8865\u5145", answer: "\u63D0\u4EA4\u7B54\u590D", fail: "\u62A5\u544A\u5931\u8D25", retry: "\u4EBA\u5DE5\u91CD\u8BD5" };
   actionLabels.rollback = "\u56DE\u9000\u5B9E\u73B0";
@@ -411,7 +550,7 @@
     item.addEventListener("click", handler);
     return item;
   };
-  function createObservability({ request, ready, adopt, getResult, getArrangement, download, isBusy, setBusy }) {
+  function createObservability({ request, ready, adopt, getResult, getArrangement, download, isBusy, setBusy, renderCases, openPlan }) {
     let events = [], runtime = {}, discussion;
     const activity = document.getElementById("activity");
     const discussionResult = document.getElementById("discussion-result");
@@ -432,7 +571,8 @@
         );
         return row;
       }));
-      document.getElementById("event-count").textContent = events.length + " \u6761\u8BB0\u5F55";
+      document.getElementById("event-count").textContent = events.length;
+      document.getElementById("activity-empty").hidden = events.length > 0;
     }
     extract.addEventListener("click", async () => {
       if (isBusy()) return;
@@ -447,7 +587,8 @@
       const source = transcript.value;
       try {
         const response = await request("discussion", { transcript: source });
-        discussion = { transcript: source, ...response.discussion, confirmed: false };
+        const { mainline, points } = response.discussion;
+        discussion = { transcript: source, mainline, points, confirmed: false };
         renderDiscussion();
       } catch (error) {
         discussionError.textContent = error.message;
@@ -476,7 +617,6 @@
         node("pre", discussion.transcript.split(/\r?\n/).map((line, i) => i + 1 + "  " + line).join("\n"), "transcript-source")
       );
       discussionResult.append(original);
-      const inputs = /* @__PURE__ */ new Map();
       for (const point of discussion.points) {
         const card = node("article", "", "chain-card");
         card.append(
@@ -484,45 +624,170 @@
           node("p", point.text)
         );
         for (const evidence of point.evidence) card.append(node("blockquote", "\u7B2C " + evidence.line + " \u884C \xB7 " + evidence.quote));
-        if (point.kind === "open") {
-          const label2 = node("label", "\u8D1F\u8D23\u4EBA\u5904\u7406\u51B3\u5B9A");
-          const input = node("input");
-          input.maxLength = 500;
-          input.value = discussion.resolutions?.[point.id] || "";
-          input.disabled = discussion.confirmed;
-          label2.append(input);
-          card.append(label2);
-          inputs.set(point.id, input);
-        }
         discussionResult.append(card);
       }
-      const label = node("label", "\u5171\u540C\u7406\u89E3\u8349\u7A3F\uFF08\u53EF\u4FEE\u6539\uFF09");
-      const mainline = node("textarea");
-      mainline.value = discussion.confirmedText || discussion.mainline;
-      mainline.maxLength = 2e3;
-      mainline.disabled = discussion.confirmed;
-      label.append(mainline);
-      const confirm = button(discussion.confirmed ? "\u8D1F\u8D23\u4EBA\u5DF2\u786E\u8BA4" : "\u786E\u8BA4\u5E76\u8F6C\u5165\u4EA7\u54C1\u60F3\u6CD5", () => {
-        if (isBusy()) return;
-        const resolutions = Object.fromEntries([...inputs].map(([id, input]) => [id, input.value.trim()]));
-        if (!mainline.value.trim() || Object.values(resolutions).some((value) => !value)) {
-          discussionError.textContent = "\u8BF7\u5148\u586B\u5199\u5171\u540C\u7406\u89E3\uFF0C\u5E76\u5904\u7406\u6240\u6709\u5F85\u786E\u8BA4\u95EE\u9898\u3002";
-          return;
+      const rounds = discussion.rounds ?? [];
+      const current = rounds.at(-1);
+      if (!current) {
+        if (discussion.confirmed) {
+          discussionResult.append(node("h3", "\u65E7\u7248\u8BB0\u5F55 \xB7 \u5DF2\u7531\u8D1F\u8D23\u4EBA\u786E\u8BA4"), node("p", discussion.confirmedText || discussion.mainline));
+        } else {
+          discussionResult.append(proposalEditor());
         }
-        const text2 = [mainline.value.trim(), ...Object.entries(resolutions).map(([id, value]) => "\u8D1F\u8D23\u4EBA\u5BF9 " + id + " \u7684\u786E\u8BA4\uFF1A" + value)].join("\n");
-        if (text2.length > 4e3 || text2.length < 15) {
-          discussionError.textContent = "\u786E\u8BA4\u540E\u7684\u4EA7\u54C1\u60F3\u6CD5\u9700\u5728 15 \u81F3 4000 \u5B57\u4E4B\u95F4\uFF0C\u8BF7\u8C03\u6574\u4E3B\u7EBF\u6216\u51B3\u5B9A\u3002";
-          return;
-        }
-        const saved = { ...discussion, resolutions, confirmedText: mainline.value.trim(), confirmed: true };
-        adopt(text2);
-        discussion = saved;
-        log("\u8BA8\u8BBA\u786E\u8BA4", "\u4EBA\u5DE5\u786E\u8BA4", "\u5171\u540C\u7406\u89E3\u53CA " + Object.keys(resolutions).length + " \u9879\u5206\u6B67\u5904\u7406\u5DF2\u8F6C\u5165\u4EA7\u54C1\u60F3\u6CD5");
+        return;
+      }
+      discussionResult.append(roundCard(current));
+      if (rounds.length > 1) {
+        const history = node("details", "", "consensus-history");
+        history.append(
+          node("summary", "\u67E5\u770B\u5386\u53F2\u8F6E\u6B21\uFF08" + (rounds.length - 1) + " \u8F6E\uFF09"),
+          ...rounds.slice(0, -1).reverse().map(roundCard)
+        );
+        discussionResult.append(history);
+      }
+      if (discussion.confirmed) {
+        discussionResult.append(node(
+          "p",
+          "\u5171\u8BC6\u5DF2\u786E\u8BA4 \xB7 \u7B2C " + current.number + " \u8F6E\u5168\u5458\u540C\u610F \xB7 \u5DF2\u8F6C\u5165\u4EA7\u54C1\u60F3\u6CD5",
+          "consensus-confirmed"
+        ), button("\u67E5\u770B\u4EA7\u54C1\u60F3\u6CD5", openPlan));
+        return;
+      }
+      const readyToConfirm = acknowledgedAll(discussion);
+      const confirm = button("\u786E\u8BA4\u5171\u8BC6\u5E76\u8F6C\u5165\u4EA7\u54C1\u60F3\u6CD5", () => updateDiscussion(() => {
+        const accepted = confirmConsensus(discussion);
+        adopt(accepted.text);
+        discussion = accepted.discussion;
+        log(
+          "\u5171\u8BC6\u786E\u8BA4",
+          "\u5168\u5458\u540C\u610F",
+          "\u7B2C " + current.number + " \u8F6E\u83B7 " + discussion.participants.length + " \u4F4D\u53C2\u4E0E\u8005\u540C\u610F\uFF0C\u5DF2\u8F6C\u5165\u4EA7\u54C1\u60F3\u6CD5",
+          { round: current.number, participants: discussion.participants }
+        );
+      }));
+      confirm.disabled = !readyToConfirm;
+      discussionResult.append(node("p", readyToConfirm ? "\u5168\u5458\u5DF2\u540C\u610F\u672C\u8F6E\u63D0\u6848\u3002" : "\u672C\u8F6E\u5168\u5458\u540C\u610F\u540E\u53EF\u8F6C\u5165\u4EA7\u54C1\u60F3\u6CD5\u3002", "hint"), confirm);
+      const revise = node("details", "", "consensus-history");
+      revise.append(node("summary", "\u4FEE\u8BA2\u63D0\u6848\u5E76\u5F00\u542F\u65B0\u4E00\u8F6E"), proposalEditor(current));
+      discussionResult.append(revise);
+    }
+    function updateDiscussion(action) {
+      if (isBusy()) return;
+      try {
+        action();
         discussionError.textContent = "";
         renderDiscussion();
+      } catch (error) {
+        discussionError.textContent = error.message;
+      }
+    }
+    function labeled(parent, title, control) {
+      const label = node("label", title);
+      label.append(control);
+      parent.append(label);
+      return control;
+    }
+    function proposalEditor(previous) {
+      const editor = node("section", "", "chain-card");
+      editor.append(node("h3", previous ? "\u7B2C " + (previous.number + 1) + " \u8F6E\u63D0\u6848" : "\u8D77\u8349\u63D0\u6848"));
+      let roster;
+      if (!previous) {
+        roster = labeled(editor, "\u53C2\u4E0E\u8005\u540D\u5355\uFF08\u6BCF\u884C\u4E00\u4F4D\uFF09", node("textarea"));
+        roster.rows = 3;
+        roster.value = discussionParticipants(discussion.transcript).join("\n");
+      }
+      const proposal = labeled(editor, "\u5171\u540C\u51B3\u7B56\u63D0\u6848", node("textarea"));
+      proposal.rows = 3;
+      proposal.maxLength = 2e3;
+      proposal.value = previous?.proposal ?? discussion.mainline;
+      const decisions = discussion.points.filter((point) => point.kind === "open").map((point) => {
+        const field = labeled(editor, point.id + " \u7684\u62DF\u8BAE\u51B3\u5B9A \xB7 " + point.text, node("input"));
+        field.maxLength = 500;
+        field.value = previous?.resolutions[point.id] ?? "";
+        return [point.id, field];
       });
-      confirm.disabled = discussion.confirmed;
-      discussionResult.append(label, confirm);
+      const responses = (previous?.votes ?? []).filter((vote) => vote.stance !== "agree").map((vote) => {
+        const field = labeled(editor, "\u56DE\u5E94 " + vote.participant + " \u7684\u610F\u89C1 \xB7 " + vote.note, node("input"));
+        field.maxLength = 500;
+        return [vote.participant, field];
+      });
+      const read = (fields) => Object.fromEntries(fields.map(([id, field]) => [id, field.value]));
+      editor.append(button(previous ? "\u63D0\u4EA4\u4FEE\u8BA2\u5E76\u5F00\u542F\u65B0\u4E00\u8F6E" : "\u5F00\u542F\u7B2C\u4E00\u8F6E\u786E\u8BA4", () => updateDiscussion(() => {
+        discussion = startConsensusRound(discussion, {
+          participants: roster?.value.split(/\r?\n/).filter((line) => line.trim()),
+          proposal: proposal.value,
+          resolutions: read(decisions),
+          responses: read(responses)
+        });
+        const round = discussion.rounds.at(-1);
+        log(
+          "\u5171\u8BC6\u786E\u8BA4",
+          "\u5F00\u542F\u7B2C " + round.number + " \u8F6E",
+          round.proposal,
+          { round: round.number, participants: discussion.participants, responses: round.responses }
+        );
+      })));
+      return editor;
+    }
+    function roundCard(round) {
+      const current = discussion.rounds.at(-1) === round;
+      const byName = new Map(round.votes.map((vote) => [vote.participant, vote]));
+      const agrees = round.votes.filter((vote) => vote.stance === "agree").length;
+      const card = node("article", "", "chain-card consensus-round");
+      card.append(
+        node("h3", "\u7B2C " + round.number + " \u8F6E \xB7 " + agrees + " / " + discussion.participants.length + " \u540C\u610F"),
+        node("p", round.proposal, "chain-text")
+      );
+      for (const [id, answer] of Object.entries(round.resolutions)) card.append(node("p", id + " \xB7 " + answer));
+      const list = node("ul");
+      for (const name of discussion.participants) {
+        const vote = byName.get(name);
+        const row = node("li", name + " \xB7 " + (vote ? stanceLabels[vote.stance] : "\u5F85\u767B\u8BB0"));
+        if (vote?.note) row.append(node("span", (vote.point ? vote.point + " \xB7 " : "") + vote.note));
+        if (vote && vote.stance !== "agree") {
+          const revised = discussion.rounds[round.number];
+          const reply = revised?.responses[name];
+          const closed = discussion.rounds.slice(round.number).find((later) => later.votes.some((item) => item.participant === name && item.stance === "agree"));
+          if (reply) row.append(node("span", "\u7B2C " + revised.number + " \u8F6E\u56DE\u5E94 \xB7 " + reply));
+          row.append(node("span", closed ? "\u5F02\u8BAE\u5DF2\u5173\u95ED \xB7 \u672C\u4EBA\u4E8E\u7B2C " + closed.number + " \u8F6E\u540C\u610F\u4FEE\u8BA2\u7A3F" : reply ? "\u7B49\u5F85\u8BE5\u53C2\u4E0E\u8005\u786E\u8BA4\u4FEE\u8BA2\u7A3F" : "\u5F85\u56DE\u5E94"));
+        }
+        list.append(row);
+      }
+      card.append(list);
+      if (current && !discussion.confirmed && byName.size < discussion.participants.length) {
+        card.append(stanceForm(discussion.participants.filter((name) => !byName.has(name))));
+      }
+      if (current && discussion.confirmed) card.append(node("p", "\u5DF2\u786E\u8BA4\u5171\u8BC6\u5E76\u8F6C\u5165\u4EA7\u54C1\u60F3\u6CD5", "execution-status"));
+      return card;
+    }
+    function stanceForm(names) {
+      const form = node("div", "", "consensus-form");
+      const participant = labeled(form, "\u53C2\u4E0E\u8005", node("select"));
+      participant.add(new Option("\u9009\u62E9\u5F85\u767B\u8BB0\u53C2\u4E0E\u8005", ""));
+      names.forEach((name) => participant.add(new Option(name, name)));
+      const stance = labeled(form, "\u7ACB\u573A", node("select"));
+      stance.add(new Option("\u9009\u62E9\u7ACB\u573A", ""));
+      for (const [id, label] of Object.entries(stanceLabels)) stance.add(new Option(label, id));
+      const point = labeled(form, "\u6D89\u53CA\u8981\u70B9\uFF08\u9002\u7528\u4E8E\u5F02\u8BAE\uFF09", node("select"));
+      point.add(new Option("\u6574\u4EFD\u63D0\u6848", ""));
+      for (const item of discussion.points) point.add(new Option(item.id + " \xB7 " + item.text, item.id));
+      const note = labeled(form, "\u610F\u89C1\u8BF4\u660E\uFF08\u53CD\u5BF9\u6216\u4FDD\u7559\u65F6\u5FC5\u586B\uFF09", node("input"));
+      note.maxLength = 500;
+      form.append(
+        node("p", "\u8BF7\u767B\u8BB0\u53C2\u4E0E\u8005\u5DF2\u7ECF\u8868\u8FBE\u7684\u7ACB\u573A\u3002", "hint"),
+        button("\u767B\u8BB0\u7ACB\u573A", () => updateDiscussion(() => {
+          discussion = registerStance(discussion, {
+            participant: participant.value,
+            stance: stance.value,
+            point: point.value,
+            note: note.value
+          });
+          const round = discussion.rounds.at(-1);
+          const vote = round.votes.at(-1);
+          log("\u5171\u8BC6\u786E\u8BA4", stanceLabels[vote.stance], "\u7B2C " + round.number + " \u8F6E \xB7 " + vote.participant + (vote.note ? " \xB7 " + vote.note : ""), { round: round.number, ...vote });
+        }))
+      );
+      return form;
     }
     function renderExecution(container) {
       const { plan } = getResult();
@@ -534,11 +799,15 @@
         const card = node("article", "", "execution-card");
         card.append(
           node("h3", task.id + " \xB7 " + task.title),
-          node("p", task.role + " \xB7 " + stateLabels[state] + " \xB7 \u5C1D\u8BD5 " + (runtime[task.id]?.attempts || 0) + " \u6B21", "execution-status"),
+          node("p", taskStage(task) + " \xB7 " + stateLabels[state] + " \xB7 \u5C1D\u8BD5 " + (runtime[task.id]?.attempts || 0) + " \u6B21", "execution-status"),
           node("p", "\u9884\u671F\u4EA4\u4ED8\u7269\uFF1A" + task.output),
           node("p", "\u524D\u7F6E\uFF1A" + (arrangement2.dependencies[task.id].map((id) => id + " " + stateLabels[taskState(id, runtime, arrangement2)]).join("\u3001") || "\u65E0"))
         );
-        if (task.test) card.append(node("p", "\u6D4B\u8BD5\u76EE\u6807\uFF1A" + task.test.targets.map((id) => id + " " + tasks.get(id).title).join("\u3001")));
+        if (task.test) card.append(node("p", "\u6D4B\u8BD5\u76EE\u6807\uFF1A" + task.test.targets.map((id) => id + " " + tasks.get(id).title).join("\u3001")), ...renderCases(task));
+        if (task.review) card.append(
+          node("p", "\u8BC4\u5BA1\u5BF9\u8C61\uFF1A" + task.review.target + " " + tasks.get(task.review.target).title),
+          node("p", task.acceptance)
+        );
         const list = node("ul", "", "execution-history");
         for (const item of runtime[task.id]?.notes || []) list.append(node(
           "li",
@@ -565,12 +834,13 @@
               error.textContent = issue.message;
             }
           }));
-          if (state === "failed" && task.test) {
+          const candidates = rollbackTargets(task);
+          if (state === "failed" && candidates.length) {
             const targetLabel = node("label", "\u56DE\u9000\u76EE\u6807");
             const targets = node("select");
             targets.append(new Option("\u9009\u5B9A\u786E\u8BA4\u6709\u7F3A\u9677\u7684\u5B9E\u73B0\u4EFB\u52A1", ""));
-            for (const id of task.test.targets) targets.append(new Option(id + " \xB7 " + tasks.get(id).title, id));
-            if (task.test.targets.length === 1) targets.value = task.test.targets[0];
+            for (const id of candidates) targets.append(new Option(id + " \xB7 " + tasks.get(id).title, id));
+            if (candidates.length === 1) targets.value = candidates[0];
             targetLabel.append(targets);
             const impact = node("p", "", "hint");
             const rollback = button("\u56DE\u9000\u5E76\u8981\u6C42\u91CD\u9A8C", () => {
@@ -614,6 +884,7 @@
           "## " + task.id + " \xB7 " + task.title,
           "",
           "- \u5DE5\u79CD\uFF1A" + task.role,
+          "- \u5DE5\u4F5C\u7C7B\u578B\uFF1A" + taskStage(task),
           "- \u9700\u6C42\uFF1A" + task.requirements.join("\u3001"),
           "- \u8BBE\u8BA1\uFF1A" + (task.designs?.join("\u3001") || "\u5DF2\u6709\u8BBE\u8BA1\u89C4\u683C"),
           "- \u8F93\u5165\uFF1A" + (task.inputs.join("\u3001") || "\u8BBE\u8BA1\u89C4\u683C"),
@@ -627,6 +898,21 @@
           "- \u6D4B\u8BD5\u5C42\u6B21\uFF1A" + testLevelLabels[task.test.level],
           "- \u9A8C\u8BC1\u53CA\u5931\u8D25\u5B9A\u4F4D\u8303\u56F4\uFF1A" + task.test.targets.join("\u3001")
         );
+        if (task.review) lines.push("- \u8BC4\u5BA1\u5BF9\u8C61\uFF1A" + task.review.target);
+        const testPlan = result2.pipeline?.testPlan ?? result2.testPlan;
+        for (const test of testPlan?.cases.filter((test2) => test2.task === task.id) ?? []) {
+          lines.push(
+            "",
+            "### " + test.id + " \xB7 " + test.title,
+            "",
+            "\u524D\u7F6E\u6761\u4EF6\uFF1A" + test.setup,
+            "",
+            ...test.steps.map((step, index) => index + 1 + ". " + step),
+            "",
+            "\u9884\u671F\u7ED3\u679C\uFF1A" + test.expected,
+            ""
+          );
+        }
         for (const item of runtime[task.id]?.notes || []) lines.push("- " + historyText(item));
         lines.push("");
       }
@@ -658,6 +944,7 @@
         if (restored.discussion) {
           if (typeof restored.discussion.transcript !== "string") throw new Error("\u8BA8\u8BBA\u539F\u6587\u65E0\u6548");
           validateDiscussion(restored.discussion, restored.discussion.transcript);
+          validateConsensus(restored.discussion);
         }
         events = restored.events;
         runtime = restored.runtime;
@@ -695,15 +982,18 @@
   var requirementFilter = "";
   var busy = false;
   var pipeline;
+  var draft;
   var chainView = "idea";
   var runningStage = "";
+  var graphLayout = "horizontal";
+  var inputCollapsed = false;
   var steps = [
     ["idea", "\u4EA7\u54C1\u60F3\u6CD5"],
     ["requirements", "\u9700\u6C42\u89C4\u683C"],
     ["design", "\u8BBE\u8BA1\u89C4\u683C"],
+    ["tests", "\u6D4B\u8BD5\u65B9\u6848"],
     ["schedule", "\u4EFB\u52A1\u7F16\u6392"],
-    ["feedback", "\u8BBE\u8BA1\u56DE\u586B"],
-    ["tests", "\u6D4B\u8BD5\u65B9\u6848"]
+    ["feedback", "\u8BBE\u8BA1\u56DE\u586B"]
   ];
   var stepLabels = new Map(steps);
   var monitor = createObservability({
@@ -714,12 +1004,34 @@
     download: downloadFile,
     isBusy: () => busy,
     setBusy: lock,
+    renderCases: taskCases,
+    openPlan: () => selectWorkspace(false, true),
     adopt: (text2) => {
       inputMode.value = "idea";
       spec.value = text2;
       changeSpec(true);
     }
   });
+  function selectWorkspace(discussion, focus = false) {
+    byId("workspace").hidden = discussion;
+    byId("discussion-panel").hidden = !discussion;
+    byId("workspace-plan").setAttribute("aria-pressed", String(!discussion));
+    byId("workspace-discussion").setAttribute("aria-pressed", String(discussion));
+    if (!discussion && result && active === "graph") render();
+    if (focus) byId(discussion ? "workspace-discussion" : "workspace-plan").focus();
+  }
+  function showInput(visible) {
+    inputCollapsed = !visible;
+    byId("input-body").hidden = !visible;
+    byId("workspace").classList.toggle("input-collapsed", !visible);
+    const toggle = byId("toggle-input");
+    toggle.setAttribute("aria-expanded", String(visible));
+    toggle.textContent = visible ? "\u6536\u8D77\u8F93\u5165" : "\u5C55\u5F00\u8F93\u5165";
+  }
+  byId("workspace-plan").addEventListener("click", () => selectWorkspace(false));
+  byId("workspace-discussion").addEventListener("click", () => selectWorkspace(true));
+  byId("toggle-input").addEventListener("click", () => showInput(inputCollapsed));
+  byId("open-activity").addEventListener("click", () => byId("activity-dialog").showModal());
   function element(tag, content = "", className = "") {
     const node2 = document.createElement(tag);
     node2.textContent = content;
@@ -734,7 +1046,7 @@
     return inputMode.value === "idea" ? "\u4EA7\u54C1\u60F3\u6CD5" : "\u8BBE\u8BA1\u89C4\u683C";
   }
   function runLabel() {
-    if (inputMode.value === "design") return "\u8FD0\u884C\u4EFB\u52A1\u7F16\u6392 \u2197";
+    if (inputMode.value === "design") return draft ? "\u7EE7\u7EED\u751F\u6210\u6D4B\u8BD5\u65B9\u6848 \u2197" : "\u8FD0\u884C\u4EFB\u52A1\u7F16\u6392 \u2197";
     if (pipeline?.requirements && !pipeline.testPlan) return "\u7EE7\u7EED\u5B8C\u6574\u6D41\u7A0B \u2197";
     return "\u8FD0\u884C\u5B8C\u6574\u6D41\u7A0B \u2197";
   }
@@ -759,11 +1071,12 @@
   function changeSpec(preserveDiscussion = false) {
     result = void 0;
     pipeline = void 0;
+    draft = void 0;
     chainView = "idea";
     if (preserveDiscussion !== true) monitor.reset();
     updateInput();
     run.textContent = runLabel();
-    statusMessage("\u7B49\u5F85\u8FD0\u884C\u5DE5\u4F5C\u6D41", inputMode.value === "idea" ? "\u8F93\u5165\u60F3\u6CD5\u6216\u9009\u62E9\u6848\u4F8B\uFF0C\u4F9D\u6B21\u751F\u6210\u9700\u6C42\u89C4\u683C\u3001\u8BBE\u8BA1\u89C4\u683C\u3001\u4EFB\u52A1\u7F16\u6392\u3001\u8BBE\u8BA1\u56DE\u586B\u548C\u6D4B\u8BD5\u65B9\u6848\u3002" : "\u8F93\u5165\u5DF2\u6709\u8BBE\u8BA1\u89C4\u683C\uFF0C\u67E5\u770B\u4EFB\u52A1\u5206\u89E3\u548C\u4F9D\u8D56\u5173\u7CFB\u3002");
+    statusMessage("\u7B49\u5F85\u8FD0\u884C\u5DE5\u4F5C\u6D41", inputMode.value === "idea" ? "\u8F93\u5165\u60F3\u6CD5\u6216\u9009\u62E9\u6848\u4F8B\uFF0C\u751F\u6210\u9700\u6C42\u3001\u8BBE\u8BA1\u548C\u6D4B\u8BD5\u65B9\u6848\uFF0C\u67E5\u770B\u5B9E\u73B0\u7F16\u6392\u4E0E\u8BBE\u8BA1\u56DE\u586B\u3002" : "\u8F93\u5165\u5DF2\u6709\u8BBE\u8BA1\u89C4\u683C\uFF0C\u67E5\u770B\u7F16\u7801\u3001\u6D4B\u8BD5\u548C\u8BC4\u5BA1\u7684\u4F9D\u8D56\u5173\u7CFB\u3002");
     renderChain();
   }
   spec.value = examples[0].idea;
@@ -849,8 +1162,8 @@
       discussion: "\u8BA8\u8BBA\u63D0\u70BC",
       requirements: "\u60F3\u6CD5 \u2192 \u9700\u6C42\u89C4\u683C",
       design: "\u9700\u6C42 \u2192 \u8BBE\u8BA1\u89C4\u683C",
-      decompose: "\u8BBE\u8BA1 \u2192 WBS \u2192 \u7F16\u6392",
-      "test-plan": "\u8BBE\u8BA1\u4E0E\u4EFB\u52A1 \u2192 \u6D4B\u8BD5\u65B9\u6848"
+      decompose: "\u8BBE\u8BA1 \u2192 \u5F00\u53D1\u4EFB\u52A1\u5206\u89E3",
+      "test-plan": "\u6D4B\u8BD5\u65B9\u6848 \u2192 \u5B9E\u73B0\u4EFB\u52A1\u96C6"
     };
     const label = labels[endpoint] || endpoint;
     const started = performance.now();
@@ -882,33 +1195,42 @@
       runningStage = "requirements";
       renderChain();
       statusMessage("\u6B63\u5728\u751F\u6210\u9700\u6C42\u89C4\u683C", "\u4F5C\u4E1A\u4E00 \xB7 \u5C06\u4EA7\u54C1\u60F3\u6CD5\u6574\u7406\u4E3A\u7F16\u53F7\u9700\u6C42\u548C\u9A8C\u6536\u6761\u4EF6\u3002");
-      const data2 = await requestStage("requirements", { idea });
-      pipeline.requirements = data2.requirements;
+      const data = await requestStage("requirements", { idea });
+      pipeline.requirements = data.requirements;
       chainView = "requirements";
     }
     if (!pipeline.design) {
       runningStage = "design";
       renderChain();
       statusMessage("\u6B63\u5728\u751F\u6210\u8BBE\u8BA1\u89C4\u683C", "\u6839\u636E\u9700\u6C42\u89C4\u683C\u751F\u6210\u603B\u4F53\u8BBE\u8BA1\u3001\u6A21\u5757\u5212\u5206\u548C\u63A5\u53E3\u7EA6\u5B9A\u3002");
-      const data2 = await requestStage("design", { requirements: pipeline.requirements });
-      pipeline.design = data2.design;
+      const data = await requestStage("design", { requirements: pipeline.requirements });
+      pipeline.design = data.design;
       chainView = "design";
     }
-    const { requirements, design } = pipeline;
-    if (!result) {
+    await runImplementation({ requirements: pipeline.requirements, design: pipeline.design });
+  }
+  async function runImplementation(source) {
+    if (!draft) {
       runningStage = "schedule";
       renderChain();
-      statusMessage("\u6B63\u5728\u5206\u89E3\u5E76\u7F16\u6392\u4EFB\u52A1", "\u4F5C\u4E1A\u4E8C \xB7 \u6309\u8BBE\u8BA1\u6761\u76EE\u5206\u89E3\u4EFB\u52A1\uFF0C\u8BA1\u7B97\u4F9D\u8D56\u548C\u6279\u6B21\uFF0C\u7136\u540E\u56DE\u586B\u5230\u8BBE\u8BA1\u89C4\u683C\u3002");
-      const data2 = await requestStage("decompose", { requirements, design });
-      show({ ...data2, spec: designMarkdown(requirements, design), pipeline });
-      monitor.log("\u4EFB\u52A1\u7F16\u6392", "\u5B8C\u6210", result.plan.tasks.length + " \u9879\u4EFB\u52A1\uFF0C" + arrangement.rounds.length + " \u4E2A\u6267\u884C\u6279\u6B21");
-      chainView = "feedback";
+      statusMessage("\u6B63\u5728\u5206\u89E3\u5F00\u53D1\u4EFB\u52A1", "PM Agent \u6B63\u5728\u6309\u8BBE\u8BA1\u89C4\u683C\u5206\u89E3\u6A21\u5757\u3001\u63A5\u53E3\u5951\u7EA6\u548C\u7F16\u7801\u4EFB\u52A1\u3002");
+      draft = (await requestStage("decompose", { ...source, draftOnly: true })).plan;
     }
     runningStage = "tests";
     renderChain();
-    const data = await requestStage("test-plan", { requirements, design, plan: result.plan });
-    pipeline.testPlan = data.testPlan;
-    chainView = "tests";
+    statusMessage("\u6B63\u5728\u5236\u5B9A\u6D4B\u8BD5\u65B9\u6848", "\u7528\u4F8B\u901A\u8FC7\u6821\u9A8C\u540E\uFF0C\u548C\u7F16\u7801\u3001\u8BC4\u5BA1\u4E00\u8D77\u8FDB\u5165\u4EFB\u52A1\u96C6\uFF0C\u518D\u8BA1\u7B97\u6267\u884C\u6279\u6B21\u3002");
+    const { testPlan, ...data } = await requestStage("test-plan", { ...source, plan: draft, draftOnly: true });
+    if (pipeline) {
+      pipeline.testPlan = testPlan;
+      chainView = "schedule";
+    }
+    show({
+      ...data,
+      spec: source.spec ?? designMarkdown(source.requirements, source.design),
+      ...pipeline ? { pipeline } : { testPlan }
+    });
+    draft = void 0;
+    monitor.log("\u5B9E\u73B0\u9636\u6BB5\u7F16\u6392", "\u5B8C\u6210", result.plan.tasks.length + " \u9879\u7F16\u7801\u3001\u6D4B\u8BD5\u3001\u8BC4\u5BA1\u4E0E\u8BBE\u8BA1\u4EFB\u52A1\uFF0C" + arrangement.rounds.length + " \u4E2A\u6267\u884C\u6279\u6B21");
   }
   async function ensureReady() {
     if (!apiStatus) await checkStatus();
@@ -931,7 +1253,7 @@
       return;
     }
     if (!await ensureReady()) return;
-    if (result && (inputMode.value === "design" || pipeline?.testPlan)) {
+    if (result) {
       pipeline = void 0;
       chainView = "idea";
       result = void 0;
@@ -943,14 +1265,12 @@
       if (inputMode.value === "idea") {
         await runPipeline(spec.value);
       } else {
-        statusMessage("PM Agent \u6B63\u5728\u5206\u89E3\u4EFB\u52A1", "DeepSeek \u6B63\u5728\u6839\u636E\u8BBE\u8BA1\u89C4\u683C\u751F\u6210\u5F00\u53D1\u4EFB\u52A1\uFF0C\u7F16\u6392\u5668\u968F\u540E\u8BA1\u7B97\u6279\u6B21\u3002");
-        const data = await requestStage("decompose", { spec: spec.value });
-        show({ ...data, spec: spec.value });
+        await runImplementation({ spec: spec.value });
       }
     } catch (error) {
       const title = runningStage ? stepLabels.get(runningStage) + "\u751F\u6210\u5931\u8D25" : "\u751F\u6210\u5931\u8D25";
-      if (result) byId("input-error").textContent = title + "\u3002" + error.message;
-      else statusMessage(title, error.message);
+      byId("input-error").textContent = title + "\u3002" + error.message;
+      statusMessage(title, error.message);
       if (error instanceof TypeError) await checkStatus();
     } finally {
       runningStage = "";
@@ -964,7 +1284,7 @@
     if (!chosen) return;
     try {
       if (chosen.size > 1024 * 1024) throw new Error("\u7ED3\u679C\u6587\u4EF6\u6700\u591A 1 MB\u3002");
-      const { provider, spec: source, plan, model, generatedAt, pipeline: chain, observation } = JSON.parse(await chosen.text());
+      const { provider, spec: source, plan, model, generatedAt, pipeline: chain, observation, testPlan } = JSON.parse(await chosen.text());
       if (busy) return;
       const input = chain === void 0 ? source : chain?.idea;
       if (provider !== "deepseek" || typeof input !== "string" || input.trim().length < 15 || input.length > 4e3 || typeof model !== "string" || !model.trim()) {
@@ -981,13 +1301,18 @@
         if (chain.testPlan !== void 0) validateTestPlan(chain.testPlan, chain.design, restoredPlan);
       } else {
         schedule(restoredPlan, Number(capacity.value));
+        if (testPlan !== void 0) validateTestPlan(testPlan, void 0, restoredPlan);
+      }
+      if (restoredPlan.tasks.some((task) => task.test?.cases) && !(chain?.testPlan ?? testPlan)) {
+        throw new Error("\u7ED3\u679C\u7F3A\u5C11\u4E0E\u6D4B\u8BD5\u4EFB\u52A1\u7ED1\u5B9A\u7684\u6D4B\u8BD5\u65B9\u6848");
       }
       const restoredArrangement = schedule(restoredPlan, Number(capacity.value));
       monitor.restore(observation, restoredPlan, restoredArrangement);
       pipeline = chain;
+      draft = void 0;
       inputMode.value = chain ? "idea" : "design";
       chainView = chain ? "design" : "idea";
-      show({ provider, spec: sourceDesign, plan: restoredPlan, model, generatedAt, pipeline, mode: "imported" });
+      show({ provider, spec: sourceDesign, plan: restoredPlan, model, generatedAt, pipeline, testPlan, mode: "imported" });
       spec.value = input;
       updateInput();
       run.textContent = runLabel();
@@ -1020,15 +1345,18 @@
     render();
   }));
   byId("go-spec").addEventListener("click", () => {
+    selectWorkspace(false);
     if (pipeline?.design) {
       openChain("design");
       return;
     }
+    showInput(true);
     byId("input-title").scrollIntoView({ block: "start" });
     if (!busy) spec.focus({ preventScroll: true });
   });
   function openResults(viewName) {
     active = viewName;
+    if (byId("workspace").hidden) selectWorkspace(false);
     if (result) render();
     else if (!busy) {
       const showTasks = viewName === "tasks";
@@ -1085,8 +1413,9 @@
     }));
     const content = byId("chain-content");
     content.replaceChildren();
+    content.scrollTop = 0;
     if (chainView === "schedule") {
-      content.append(element("p", "\u8BBE\u8BA1\u89C4\u683C \u2192 \u5F00\u53D1\u4EFB\u52A1 \u2192 \u4F9D\u8D56\u56FE\u548C\u6267\u884C\u6279\u6B21\u3002\u8BF7\u5728\u4E0B\u65B9\u5207\u6362\u67E5\u770B\u3002", "hint"));
+      content.append(element("p", "\u7F16\u7801\u3001\u5355\u5143\u6D4B\u8BD5\u3001\u8054\u8C03\u3001\u8BC4\u5BA1\u4E0E\u9A8C\u6536\u5DF2\u7EB3\u5165\u540C\u4E00\u4EFB\u52A1\u96C6\u3002", "hint"));
       return;
     }
     if (chainView === "idea") {
@@ -1121,20 +1450,16 @@
         const link = element("button", "\u67E5\u770B\u6D4B\u8BD5\u4EFB\u52A1 " + test.task, "task-link");
         link.type = "button";
         link.addEventListener("click", () => locateGraphTask(test.task));
-        const list = element("ol", "", "test-steps");
-        test.steps.forEach((step) => list.append(element("li", step)));
         const batch = arrangement.rounds.findIndex((ids) => ids.includes(test.task)) + 1;
         const level = tasks.get(test.task).test?.level;
         card.append(
           element("h4", test.id + " \xB7 " + test.title),
           element(
             "p",
-            (level ? testLevelLabels[level] + " \xB7 " : "") + test.requirements.join("\u3001") + " \u2192 " + test.design + " \u2192 " + test.task + " \xB7 \u7B2C " + batch + " \u6279",
+            (level ? testLevelLabels[level] + " \xB7 " : "") + test.requirements.join("\u3001") + " \u2192 " + (test.designs?.join("\u3001") ?? test.design) + " \u2192 " + test.task + " \xB7 \u7B2C " + batch + " \u6279",
             "hint"
           ),
-          element("p", "\u524D\u7F6E\u6761\u4EF6\uFF1A" + test.setup),
-          list,
-          element("p", "\u9884\u671F\u7ED3\u679C\uFF1A" + test.expected),
+          ...caseInstructions(test),
           link
         );
         content.append(card);
@@ -1183,6 +1508,21 @@
       return card;
     }));
   }
+  function caseInstructions(test) {
+    const list = element("ol", "", "test-steps");
+    test.steps.forEach((step) => list.append(element("li", step)));
+    return [element("p", "\u524D\u7F6E\u6761\u4EF6\uFF1A" + test.setup), list, element("p", "\u9884\u671F\u7ED3\u679C\uFF1A" + test.expected)];
+  }
+  function taskCases(task) {
+    const plan = result.pipeline?.testPlan ?? result.testPlan;
+    const cases = plan?.cases.filter((item) => item.task === task.id);
+    if (!cases?.length) return [];
+    return cases.map((test) => {
+      const details = element("details", "", "task-test-case");
+      details.append(element("summary", test.id + " \xB7 " + test.title), ...caseInstructions(test));
+      return details;
+    });
+  }
   function taskCard(task, full = false, interactive = false) {
     const card = element(interactive ? "button" : "article", "", "task");
     if (interactive) {
@@ -1190,9 +1530,11 @@
       if (task.role === "\u540E\u7AEF") card.style.borderLeft = "4px solid #e74c3c";
       if (task.role === "\u6D4B\u8BD5") card.style.borderLeft = "4px solid #f39c12";
       if (task.role === "\u4EA7\u54C1\u8BBE\u8BA1") card.style.borderLeft = "4px solid #9b59b6";
+      if (task.role === "\u8BC4\u5BA1") card.style.borderLeft = "4px solid #23836a";
     }
+    const stage = taskStage(task);
     card.append(
-      element("span", task.id + " \xB7 " + task.role + " \xB7 " + task.requirements.join("\u3001"), "task-meta"),
+      element("span", task.id + " \xB7 " + (stage === "\u7F16\u7801" ? "\u7F16\u7801 / " + task.role : stage) + " \xB7 " + task.requirements.join("\u3001"), "task-meta"),
       element("strong", task.title)
     );
     if (full) {
@@ -1202,7 +1544,8 @@
         element("p", "\u9A8C\u6536\uFF1A" + task.acceptance)
       );
       if (result.pipeline) card.append(element("p", "\u8BBE\u8BA1\u6765\u6E90\uFF1A" + task.designs.join("\u3001")));
-      if (task.test) card.append(element("p", "\u6D4B\u8BD5\u76EE\u6807\u53CA\u5931\u8D25\u5B9A\u4F4D\u8303\u56F4\uFF1A" + task.test.targets.join("\u3001")));
+      if (task.test) card.append(element("p", "\u6D4B\u8BD5\u76EE\u6807\u53CA\u5931\u8D25\u5B9A\u4F4D\u8303\u56F4\uFF1A" + task.test.targets.join("\u3001")), ...taskCases(task));
+      if (task.review) card.append(element("p", "\u8BC4\u5BA1\u5BF9\u5E94\u7F16\u7801\uFF1A" + task.review.target));
       const added = arrangement.edges.filter((edge) => edge.to === task.id && !task.inputs.includes(edge.artifact));
       if (added.length) card.append(element("p", "\u7F16\u6392\u8865\u9F50\u7684\u8F93\u5165\uFF1A" + added.map((edge) => edge.artifact).join("\u3001")));
     }
@@ -1360,6 +1703,23 @@ export const executeCoreTask = async (req: Request, res: Response) => {
     }
   }
   function showGraph(tasksById) {
+    const vertical = graphLayout === "vertical";
+    const layouts = element("div", "", "graph-layouts");
+    layouts.setAttribute("aria-label", "\u4F9D\u8D56\u56FE\u5E03\u5C40");
+    for (const [id, label] of [["horizontal", "\u6A2A\u5411\u4F9D\u8D56\u56FE"], ["vertical", "\u7EB5\u5411\u6267\u884C\u6D41\u7A0B"]]) {
+      const toggle = element("button", label);
+      toggle.type = "button";
+      toggle.dataset.layout = id;
+      toggle.setAttribute("aria-pressed", String(id === graphLayout));
+      toggle.addEventListener("click", () => {
+        if (graphLayout === id) return;
+        graphLayout = id;
+        render();
+        view.querySelector('[data-layout="' + id + '"]').focus({ preventScroll: true });
+      });
+      layouts.append(toggle);
+    }
+    view.append(layouts);
     const toolbar = element("div", "", "graph-toolbar");
     const explanation = element("p", "", "hint");
     explanation.setAttribute("role", "status");
@@ -1369,8 +1729,8 @@ export const executeCoreTask = async (req: Request, res: Response) => {
     view.append(toolbar);
     const scroll = element("div", "", "graph-scroll");
     scroll.tabIndex = 0;
-    scroll.setAttribute("aria-label", "\u53EF\u6A2A\u5411\u6EDA\u52A8\u7684\u4EFB\u52A1\u4F9D\u8D56\u56FE");
-    const graph = element("div", "", "graph");
+    scroll.setAttribute("aria-label", vertical ? "\u6309\u6267\u884C\u6279\u6B21\u4ECE\u4E0A\u5230\u4E0B\u7684\u6D41\u7A0B\u56FE" : "\u53EF\u6A2A\u5411\u6EDA\u52A8\u7684\u4EFB\u52A1\u4F9D\u8D56\u56FE");
+    const graph = element("div", "", vertical ? "graph graph-vertical" : "graph");
     const canvas = element("canvas");
     canvas.setAttribute("aria-hidden", "true");
     graph.append(canvas);
@@ -1380,16 +1740,24 @@ export const executeCoreTask = async (req: Request, res: Response) => {
     const columns = [];
     const batches = new Map(arrangement.rounds.flatMap((ids, batch) => ids.map((id) => [id, batch])));
     const overview = overviewEdges(arrangement.edges, [...batches.keys()]);
+    const parallel = arrangement.rounds.filter((batch) => batch.length > 1).length;
+    const reason = result.plan.serialJustification;
+    if (typeof reason === "string" && reason) view.append(element("p", "\u7F16\u7801\u9700\u4E32\u884C\uFF1A" + reason, "hint"));
+    const graphArea = element("div", "", vertical ? "graph-area vertical-area" : "graph-area");
     function draw() {
       const edges = selected ? arrangement.edges.filter((edge) => edge.from === selected || edge.to === selected) : overview;
       const bounds = graph.getBoundingClientRect();
+      const begin = (box) => vertical ? box.top - bounds.top : box.left - bounds.left;
+      const endOf = (box) => vertical ? box.bottom - bounds.top : box.right - bounds.left;
+      const acrossEnd = (box) => vertical ? box.right - bounds.left : box.bottom - bounds.top;
       const nodes = new Map([...buttons].map(([id, button2]) => {
         const box = button2.getBoundingClientRect();
+        const breadth = vertical ? box.width : box.height;
         return [id, {
-          left: box.left - bounds.left,
-          right: box.right - bounds.left,
-          middle: box.top + box.height / 2 - bounds.top,
-          height: box.height,
+          left: begin(box),
+          right: endOf(box),
+          middle: acrossEnd(box) - breadth / 2,
+          height: breadth,
           batch: batches.get(id)
         }];
       }));
@@ -1409,23 +1777,24 @@ export const executeCoreTask = async (req: Request, res: Response) => {
         }
       }
       gutters.forEach((tracks, index) => {
-        const left = columns[index].getBoundingClientRect().right - bounds.left + 8;
-        const right = columns[index + 1].getBoundingClientRect().left - bounds.left - 10;
+        const left = endOf(columns[index].getBoundingClientRect()) + 8;
+        const right = begin(columns[index + 1].getBoundingClientRect()) - 10;
         tracks.sort((a, b) => a.order - b.order || a.route.y1 - b.route.y1 || a.route.y2 - b.route.y2);
         tracks.forEach(({ route, key }, lane) => {
           route[key] = left + (right - left) * (lane + 1) / (tracks.length + 1);
         });
       });
       const rows = [];
-      const belowCards = Math.max(...columns.map((column) => column.lastElementChild.getBoundingClientRect().bottom)) - bounds.top;
+      const belowCards = Math.max(...columns.map((column) => acrossEnd(column.lastElementChild.getBoundingClientRect()))) + 18;
       longRoutes.sort((a, b) => a.start.batch - b.start.batch || a.end.batch - b.end.batch);
       for (const route of longRoutes) {
         let row = rows.findIndex((end) => end < route.start.batch);
         if (row === -1) row = rows.length;
         rows[row] = route.end.batch;
-        route.floor = belowCards + 15 + row * 11;
+        route.floor = belowCards + row * 11;
       }
-      graph.style.paddingBottom = 16 + rows.length * 11 + "px";
+      const returns = vertical && selected ? rollbackTargets(tasksById.get(selected)) : [];
+      graph.style[vertical ? "paddingRight" : "paddingBottom"] = 26 + (rows.length + returns.length) * 11 + "px";
       const ratio = window.devicePixelRatio || 1;
       canvas.width = Math.ceil(graph.clientWidth * ratio);
       canvas.height = Math.ceil(graph.clientHeight * ratio);
@@ -1434,36 +1803,54 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       const context = canvas.getContext("2d");
       context.scale(ratio, ratio);
       context.lineJoin = "round";
-      for (const { edge, start, end, y1, y2, out, in: entry, floor } of routes) {
-        const x2 = end.left - 2;
-        context.strokeStyle = context.fillStyle = edge.to === selected ? "#376e9e" : "#34745e";
+      function drawRoute(points, color, dashed = false) {
+        const position = ([along2, across2]) => vertical ? [across2, along2] : [along2, across2];
+        const [along, across] = points.at(-1);
+        const direction = Math.sign(along - points.at(-2)[0]);
+        context.strokeStyle = context.fillStyle = color;
         context.lineWidth = 1.6;
+        context.setLineDash(dashed ? [5, 4] : []);
         context.beginPath();
-        context.moveTo(start.right, y1);
-        context.lineTo(out, y1);
-        if (floor !== void 0) {
-          context.lineTo(out, floor);
-          context.lineTo(entry, floor);
-          context.lineTo(entry, y2);
-        } else {
-          context.lineTo(out, y2);
-        }
-        context.lineTo(x2, y2);
+        context.moveTo(...position(points[0]));
+        for (const point of points.slice(1)) context.lineTo(...position(point));
         context.stroke();
         context.beginPath();
-        context.moveTo(x2, y2);
-        context.lineTo(x2 - 6, y2 - 4);
-        context.lineTo(x2 - 6, y2 + 4);
+        context.moveTo(...position([along, across]));
+        context.lineTo(...position([along - direction * 6, across - 4]));
+        context.lineTo(...position([along - direction * 6, across + 4]));
         context.fill();
       }
+      for (const { edge, start, end, y1, y2, out, in: entry, floor } of routes) {
+        const points = [[start.right, y1], [out, y1]];
+        if (floor !== void 0) points.push([out, floor], [entry, floor], [entry, y2]);
+        else points.push([out, y2]);
+        points.push([end.left - 2, y2]);
+        drawRoute(points, edge.to === selected ? "#376e9e" : "#34745e");
+      }
+      returns.forEach((id, index) => {
+        const from = nodes.get(selected);
+        const to = nodes.get(id);
+        const lane = belowCards + (rows.length + index) * 11;
+        const leave = endOf(columns[from.batch].getBoundingClientRect()) + 16 + index * 4;
+        const enter = endOf(columns[to.batch].getBoundingClientRect()) + 19;
+        drawRoute([
+          [from.right, from.middle + 6],
+          [leave, from.middle + 6],
+          [leave, lane],
+          [enter, lane],
+          [enter, to.middle + 6],
+          [to.right + 3, to.middle + 6]
+        ], "#b56726", true);
+      });
     }
     function select(id) {
       selected = id;
+      graphArea.classList.toggle("has-selection", Boolean(id));
       for (const [taskId, button2] of buttons) button2.setAttribute("aria-pressed", String(id === taskId));
       reset.hidden = !id;
       if (!id) {
         const hidden = arrangement.edges.length - overview.length;
-        explanation.textContent = "\u603B\u89C8\u663E\u793A " + overview.length + " \u6761\u8FDE\u7EBF\u3002" + (hidden ? "\u53E6\u6709 " + hidden + " \u6761\u53EF\u901A\u8FC7\u4E2D\u95F4\u4EFB\u52A1\u8FFD\u6EAF\u3002" : "") + "\u70B9\u51FB\u4EFB\u52A1\u53EF\u67E5\u770B\u5B83\u7684\u5168\u90E8\u76F4\u63A5\u4F9D\u8D56\u3002";
+        explanation.textContent = parallel + " \u6279\u542B\u5E76\u884C\u4EFB\u52A1\u3002\u603B\u89C8\u663E\u793A " + overview.length + " \u6761\u8FDE\u7EBF\u3002" + (hidden ? "\u53E6\u6709 " + hidden + " \u6761\u53EF\u901A\u8FC7\u4E2D\u95F4\u4EFB\u52A1\u8FFD\u6EAF\u3002" : "") + "\u70B9\u51FB\u4EFB\u52A1\u53EF\u67E5\u770B\u5B83\u7684\u5168\u90E8\u76F4\u63A5\u4F9D\u8D56\u3002";
         detail.replaceChildren();
         draw();
         return;
@@ -1472,6 +1859,21 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       explanation.textContent = id + " \u7684 " + count + " \u6761\u8FDE\u7EBF \xB7 \u84DD\u8272\u4E3A\u524D\u7F6E\u4F9D\u8D56\uFF0C\u7EFF\u8272\u6307\u5411\u540E\u7EED\u4EFB\u52A1\u3002";
       const task = tasksById.get(id);
       const card = taskCard(task, true);
+      const targets = rollbackTargets(task);
+      if (targets.length) {
+        if (vertical) explanation.textContent += " \u6A59\u8272\u865A\u7EBF\u8868\u793A\u5931\u8D25\u65F6\u53EF\u56DE\u9000\u7684\u7F16\u7801\u3002";
+        const info = element("div", "", "graph-rollback");
+        info.append(element("h3", "\u5931\u8D25\u56DE\u9000", "dependency-heading"));
+        for (const target of targets) {
+          const change = rollbackScope(target, arrangement);
+          info.append(element("p", target + " \xB7 " + tasksById.get(target).title + " \xB7 \u5F71\u54CD " + change.length + " \u9879\u540E\u7EED\u4EFB\u52A1"));
+        }
+        const openExecution = element("button", "\u524D\u5F80\u6267\u884C\u4E0E\u4EA4\u4E92", "task-link");
+        openExecution.type = "button";
+        openExecution.addEventListener("click", () => openResults("execution"));
+        info.append(openExecution);
+        card.append(info);
+      }
       for (const [caption, here, other] of [
         ["\u524D\u7F6E\u4EFB\u52A1", "to", "from"],
         ["\u540E\u7EED\u4EFB\u52A1", "from", "to"]
@@ -1504,7 +1906,9 @@ export const executeCoreTask = async (req: Request, res: Response) => {
     }
     arrangement.rounds.forEach((ids, index) => {
       const column = element("section", "", "column");
-      column.append(element("h3", "\u7B2C " + (index + 1) + " \u6279"));
+      const batchLabel = element("h3", "\u7B2C " + (index + 1) + " \u6279");
+      if (vertical && ids.length > 1) batchLabel.append(element("span", ids.length + " \u9879\u53EF\u5E76\u884C"));
+      column.append(batchLabel);
       for (const id of ids) {
         const button2 = taskCard(tasksById.get(id), false, true);
         button2.id = "node-" + id;
@@ -1517,7 +1921,8 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       graph.append(column);
       columns.push(column);
     });
-    view.append(scroll, detail);
+    graphArea.append(scroll, detail);
+    view.append(graphArea);
     reset.addEventListener("click", () => {
       const node2 = buttons.get(selected);
       select("");
@@ -1583,12 +1988,13 @@ export const executeCoreTask = async (req: Request, res: Response) => {
         "  - \u5173\u8054\u4EFB\u52A1\uFF1A" + links.join("\u3001")
       );
     }
-    lines.push("", "## \u5F00\u53D1\u4EFB\u52A1", "");
+    lines.push("", "## \u5B9E\u73B0\u9636\u6BB5\u4EFB\u52A1\u96C6", "");
     for (const task of plan.tasks) {
       lines.push(
         "### " + task.id + " \xB7 " + task.title,
         "",
         "- \u89D2\u8272\uFF1A" + task.role,
+        "- \u5DE5\u4F5C\u7C7B\u578B\uFF1A" + taskStage(task),
         "- \u5173\u8054\u9700\u6C42\uFF1A" + task.requirements.join("\u3001"),
         "- \u4EA4\u4ED8\u7269\uFF1A" + task.output,
         "- \u9A8C\u6536\uFF1A" + task.acceptance
@@ -1596,8 +2002,10 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       if (result.pipeline) lines.push("- \u8BBE\u8BA1\u6765\u6E90\uFF1A" + task.designs.join("\u3001"));
       if (task.test) lines.push(
         "- \u6D4B\u8BD5\u5C42\u6B21\uFF1A" + testLevelLabels[task.test.level],
-        "- \u6D4B\u8BD5\u76EE\u6807\u53CA\u5931\u8D25\u5B9A\u4F4D\u8303\u56F4\uFF1A" + task.test.targets.join("\u3001")
+        "- \u6D4B\u8BD5\u76EE\u6807\u53CA\u5931\u8D25\u5B9A\u4F4D\u8303\u56F4\uFF1A" + task.test.targets.join("\u3001"),
+        ...task.test.cases ? ["- \u6D4B\u8BD5\u65B9\u6848\u7528\u4F8B\uFF1A" + task.test.cases.join("\u3001")] : []
       );
+      if (task.review) lines.push("- \u8BC4\u5BA1\u5BF9\u8C61\uFF1A" + task.review.target);
       lines.push("");
     }
     lines.push("## \u4EFB\u52A1\u4F9D\u8D56", "");
@@ -1610,7 +2018,7 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       "- \u7B2C " + (index + 1) + " \u6279 \xB7 " + ids.map((id) => id + " " + byTask.get(id).title).join("\u3001")
     ));
     if (result.pipeline) {
-      const { idea, requirements, design, testPlan } = result.pipeline;
+      const { idea, requirements, design } = result.pipeline;
       lines.push(
         "",
         "## \u539F\u59CB\u4EA7\u54C1\u60F3\u6CD5",
@@ -1637,22 +2045,23 @@ export const executeCoreTask = async (req: Request, res: Response) => {
         }
         lines.push("");
       }
-      if (testPlan) {
-        lines.push("## \u6D4B\u8BD5\u65B9\u6848", "", testPlan.strategy, "");
-        for (const test of testPlan.cases) {
-          const batch = arrangement.rounds.findIndex((ids) => ids.includes(test.task)) + 1;
-          const level = byTask.get(test.task).test?.level;
-          lines.push(
-            "### " + test.id + " \xB7 " + test.title,
-            "",
-            "\u5173\u8054\uFF1A" + (level ? testLevelLabels[level] + " \xB7 " : "") + test.requirements.join("\u3001") + " \u2192 " + test.design + " \u2192 " + test.task + " \xB7 \u7B2C " + batch + " \u6279",
-            "",
-            "\u524D\u7F6E\u6761\u4EF6\uFF1A" + test.setup,
-            ""
-          );
-          test.steps.forEach((step, index) => lines.push(index + 1 + ". " + step));
-          lines.push("", "\u9884\u671F\u7ED3\u679C\uFF1A" + test.expected, "");
-        }
+    }
+    const testPlan = result.pipeline?.testPlan ?? result.testPlan;
+    if (testPlan) {
+      lines.push("## \u6D4B\u8BD5\u65B9\u6848", "", testPlan.strategy, "");
+      for (const test of testPlan.cases) {
+        const batch = arrangement.rounds.findIndex((ids) => ids.includes(test.task)) + 1;
+        const level = taskStage(byTask.get(test.task));
+        lines.push(
+          "### " + test.id + " \xB7 " + test.title,
+          "",
+          "\u5173\u8054\uFF1A" + level + " \xB7 " + [test.requirements.join("\u3001"), test.designs?.join("\u3001") ?? test.design, test.task].filter(Boolean).join(" \u2192 ") + " \xB7 \u7B2C " + batch + " \u6279",
+          "",
+          "\u524D\u7F6E\u6761\u4EF6\uFF1A" + test.setup,
+          ""
+        );
+        test.steps.forEach((step, index) => lines.push(index + 1 + ". " + step));
+        lines.push("", "\u9884\u671F\u7ED3\u679C\uFF1A" + test.expected, "");
       }
     }
     lines.push(
@@ -1664,7 +2073,7 @@ export const executeCoreTask = async (req: Request, res: Response) => {
     downloadFile("\u5F00\u53D1\u6267\u884C\u8BA1\u5212.md", lines.join("\n") + "\n", "text/markdown;charset=utf-8");
   });
   byId("startup").hidden = true;
-  for (const id of ["workspace", "mast-actions", "flow"]) byId(id).hidden = false;
+  for (const id of ["workspace", "workspace-nav", "mast-actions", "flow"]) byId(id).hidden = false;
   changeSpec();
   void checkStatus();
 })();
