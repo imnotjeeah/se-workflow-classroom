@@ -27,7 +27,8 @@ if (windows) {
       absWorkingDir: root, entryPoints: ['server.mjs'], outfile: main,
       bundle: true, platform: 'node', format: 'esm', target: 'node26',
     });
-    const assetNames = ['index.html', 'style.css', 'app.browser.js', 'app.mjs', 'workflow.mjs', 'examples.mjs'];
+    const assetNames = ['index.html', 'style.css', 'app.browser.js', 'app.mjs', 'workflow.mjs', 'examples.mjs',
+      'pipeline.mjs', 'interaction.mjs', 'observability.mjs'];
     const config = {
       main, mainFormat: 'module', output, disableExperimentalSEAWarning: true, execArgvExtension: 'none',
       assets: Object.fromEntries(assetNames.map(name => [name, join(root, name)])),

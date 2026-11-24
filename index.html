@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SE Workflow · 开发编排工作台</title>
+  <title>SE Workflow · 软件工程工作台</title>
   <link rel="stylesheet" href="./style.css">
   <style>
     [hidden] { display: none !important; }
@@ -38,8 +38,8 @@
   </header>
   <main>
     <div class="hero">
-      <div><p class="eyebrow">软件工程 / 课堂作业 2</p><h1>开发编排工作台</h1>
-      <p class="subtitle">从设计规格生成可追溯的开发任务与执行计划。</p></div>
+      <div><p class="eyebrow">软件工程 / 课堂作业 1 · 2 · 3</p><h1>软件工程工作台</h1>
+      <p class="subtitle">讨论提炼、规格产物与任务交互，全程可追踪。</p></div>
       <nav class="flow" id="flow" aria-label="工作流步骤" hidden>
         <button id="go-spec" type="button">Design Spec</button>
         <button id="go-tasks" type="button">PM Agent</button>
@@ -51,19 +51,36 @@
       <p role="status">正在加载工作台。请先完整解压，确保网页和配套文件在同一个文件夹。</p>
       <a href="http://127.0.0.1:8765/">已运行 Start.cmd，打开工作台</a>
     </section>
+    <details class="discussion-panel" id="discussion-panel">
+      <summary>作业三 · 讨论提炼与人工确认</summary>
+      <p class="hint">粘贴带发言人名称的多人或多 Agent 讨论，逐行查看摘要证据，处理分歧后转入产品想法。</p>
+      <label for="transcript">讨论原文</label>
+      <textarea id="transcript" maxlength="4000" rows="5" placeholder="产品同学：……&#10;前端 Agent：……"></textarea>
+      <div class="execution-actions">
+        <button id="discussion-example" type="button">填入讨论示例</button>
+        <button id="extract-discussion" type="button">提炼讨论主线</button>
+      </div>
+      <p id="discussion-error" class="error" role="alert"></p>
+      <div id="discussion-result"></div>
+    </details>
     <div id="workspace" class="workspace" hidden>
       <section class="panel input-panel" aria-labelledby="input-title">
-        <div class="panel-head"><h2 id="input-title">设计规格</h2><span class="small-label">Design Spec</span></div>
+        <div class="panel-head"><h2 id="input-title">工作流输入</h2></div>
         <div class="input-body">
+          <label for="input-mode">输入起点</label>
+          <select id="input-mode">
+            <option value="idea">从产品想法开始</option>
+            <option value="design">从已有设计规格开始</option>
+          </select>
           <label for="example">演示案例</label>
           <select id="example"></select>
-          <label for="spec">规格正文</label>
+          <label id="spec-label" for="spec">产品想法</label>
           <textarea id="spec" maxlength="4000" spellcheck="false"></textarea>
           <div class="editor-foot"><span id="count"></span><label class="upload">导入 TXT / MD<input id="file" type="file" accept=".txt,.md,text/plain,text/markdown"></label></div>
           <label for="capacity">每批并行上限</label>
           <select id="capacity"></select>
           <button id="run" class="primary" type="button">运行工作流 <span aria-hidden="true">↗</span></button>
-          <p class="request-note">运行时，规格正文会发送至 DeepSeek API。</p>
+          <p class="request-note">输入及各阶段产物会发送至 DeepSeek API 以生成后续产物。</p>
           <p id="service-help" class="request-note" hidden>在线生成需要启动原版目录里的 Start.cmd。启动后可在本页重试，或<a href="http://127.0.0.1:8765/">打开服务版工作台</a>。</p>
           <label class="replay upload">导入 DeepSeek 结果 JSON<input id="replay" type="file" accept=".json,application/json"></label>
           <p id="input-error" class="error" role="alert"></p>
@@ -73,11 +90,16 @@
         <div class="panel-head">
           <div><h2 id="result-title" tabindex="-1">工作流输出</h2><div class="provenance" id="provenance"></div></div>
           <div class="exports" id="exports" hidden>
-            <button id="gen-code" type="button">生成当前任务代码</button>
+            <button id="gen-code" type="button">查看代码示例</button>
             <button id="report" type="button">导出计划 Markdown</button>
             <button id="download" type="button">导出 JSON</button>
+            <button id="export-task-md" type="button">导出 task.md</button>
           </div>
         </div>
+        <section id="chain" class="chain" aria-label="作业产物流程" hidden>
+          <nav id="chain-steps" class="chain-steps" aria-label="查看各阶段产物"></nav>
+          <div id="chain-content" class="chain-content" tabindex="-1"></div>
+        </section>
         <div id="notice" class="notice" role="status">
           <div class="empty-mark" aria-hidden="true">↳</div>
           <strong id="notice-title">等待运行工作流</strong>
@@ -89,11 +111,18 @@
             <button type="button" data-view="tasks" aria-pressed="true">任务分解</button>
             <button type="button" data-view="graph" aria-pressed="false">依赖图</button>
             <button type="button" data-view="rounds" aria-pressed="false">执行批次</button>
+            <button type="button" data-view="execution" aria-pressed="false">执行与交互</button>
           </div>
           <div id="view"></div>
         </div>
       </section>
     </div>
+    <details class="activity-panel" open>
+      <summary>可观测记录 · <span id="event-count">0 条记录</span></summary>
+      <p class="hint">记录实际生成阶段的开始、完成、失败、模型修正，以及负责人提交的执行与交互操作。</p>
+      <button id="export-activity" type="button">导出运行与交互记录</button>
+      <ol id="activity" aria-live="polite"></ol>
+    </details>
   </main>
   <dialog id="key-dialog" aria-labelledby="key-title">
     <form id="key-form">

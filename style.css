@@ -103,6 +103,39 @@ summary{cursor:pointer;font-weight:700}
 .column .task{text-align:left;width:100%}
 .column .task[aria-pressed=true]{border-color:var(--green);background:var(--soft)}
 .graph-detail{margin-top:9px}
+.chain{padding:14px 18px;border-bottom:1px solid var(--line)}
+.chain-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:7px}
+.chain-steps button{padding:7px 6px;text-align:left;font-size:13px}
+.chain-steps button:disabled{cursor:default}
+.chain-steps button[aria-pressed=true]{background:var(--soft);border-color:var(--green)}
+.chain-steps span{display:block;margin-top:3px;color:var(--muted);font-size:11px;font-weight:500}
+.chain-content{margin-top:12px;max-height:380px;overflow:auto;overscroll-behavior:contain;font-size:13px;line-height:1.55;overflow-wrap:anywhere}
+.chain-content h3,.chain-content h4{margin:0 0 6px}
+.chain-content p{margin:5px 0}
+.chain-text{white-space:pre-wrap}
+.chain-card{margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+.feedback-task{margin-top:8px;padding-top:5px;border-top:1px solid var(--line)}
+.test-steps{margin:6px 0;padding-left:24px}
+.discussion-panel,.activity-panel{margin:18px 0;padding:16px 18px;border:1px solid var(--line);border-radius:12px;background:#fff}
+.discussion-panel summary,.activity-panel summary{cursor:pointer;font-weight:700}
+.discussion-panel>label{display:block;margin-bottom:7px;font-size:13px;font-weight:650}
+.discussion-panel textarea{min-height:100px}
+#discussion-result{font-size:13px;line-height:1.6}
+#discussion-result blockquote{margin:7px 0;padding:6px 10px;background:var(--soft);border-left:3px solid var(--green)}
+#discussion-result label{display:block;margin-top:9px}
+#discussion-result input{display:block;width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font:inherit}
+.transcript-source{white-space:pre-wrap;word-break:break-word;font:inherit}
+.execution-card{padding:12px;border:1px solid var(--line);border-radius:9px;margin-bottom:10px}
+.execution-card label{font-size:13px}
+.execution-card textarea{min-height:65px;margin-top:5px}
+.execution-card p{font-size:13px;margin:7px 0}
+.execution-status{color:var(--green);font-weight:700}
+.execution-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}
+.execution-history{padding-left:20px;font-size:12px;color:var(--muted)}
+#activity{max-height:260px;overflow:auto;padding-left:22px;font-size:12px}
+#activity li{padding:7px 0;border-bottom:1px solid var(--line)}
+#activity strong{margin:0 10px}
+#activity span{display:block;white-space:pre-wrap}
 .round{border-top:1px solid var(--line);padding:12px 0}
 @media(max-width:740px){main{padding:17px 12px}.mast{padding:0 12px}.hero{display:block;padding:19px}.flow{margin-top:14px}.workspace{grid-template-columns:1fr}.notice{min-height:260px}}
 @media(max-width:420px){.task-list,.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.connection{max-width:47%}.tabs{gap:0;padding:0 8px}.task-list{grid-template-columns:1fr}}

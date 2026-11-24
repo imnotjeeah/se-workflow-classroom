@@ -1,10 +1,13 @@
 import { examples } from './examples.mjs';
 import { schedule } from './workflow.mjs';
+import { validateDesign, validateTaskLinks, validateTestPlan, designMarkdown, designFeedback } from './pipeline.mjs';
+import { createObservability } from './observability.mjs';
 
 const byId = id => document.getElementById(id);
 const directFile = location.protocol === 'file:';
 const apiBase = directFile ? 'http://127.0.0.1:8765' : '';
 const spec = byId('spec');
+const inputMode = byId('input-mode');
 const example = byId('example');
 const capacity = byId('capacity');
 const file = byId('file');
@@ -21,6 +24,23 @@ let active = 'tasks';
 let selected = '';
 let requirementFilter = '';
 let busy = false;
+let pipeline;
+let chainView = 'idea';
+let runningStage = '';
+const steps = [
+  ['idea', '产品想法'], ['requirements', '需求规格'], ['design', '设计规格'],
+  ['schedule', '任务编排'], ['feedback', '设计回填'], ['tests', '测试方案'],
+];
+const stepLabels = new Map(steps);
+const monitor = createObservability({
+  request: requestStage, ready: ensureReady, getResult: () => result, getArrangement: () => arrangement,
+  download: downloadFile, isBusy: () => busy, setBusy: lock,
+  adopt: text => {
+    inputMode.value = 'idea';
+    spec.value = text;
+    changeSpec(true);
+  },
+});
 
 function element(tag, content = '', className = '') {
   const node = document.createElement(tag);
@@ -29,14 +49,26 @@ function element(tag, content = '', className = '') {
   return node;
 }
 
-example.add(new Option('自定义规格', ''));
+example.add(new Option('自定义输入', ''));
 examples.forEach(({name}, index) => example.add(new Option(name, String(index))));
 for (let n = 1; n <= 8; n++) capacity.add(new Option(String(n), String(n)));
 capacity.value = '4';
 
+function modeLabel() {
+  return inputMode.value === 'idea' ? '产品想法' : '设计规格';
+}
+
+function runLabel() {
+  if (inputMode.value === 'design') return '运行任务编排 ↗';
+  if (pipeline?.requirements && !pipeline.testPlan) return '继续完整流程 ↗';
+  return '运行完整流程 ↗';
+}
+
 function updateInput() {
   byId('count').textContent = spec.value.length + ' / 4000';
-  const match = examples.findIndex(item => item.spec === spec.value);
+  byId('spec-label').textContent = modeLabel();
+  const field = inputMode.value === 'idea' ? 'idea' : 'spec';
+  const match = examples.findIndex(item => item[field] === spec.value);
   example.value = match < 0 ? '' : String(match);
   byId('input-error').textContent = '';
 }
@@ -52,18 +84,30 @@ function statusMessage(title, body) {
   observer?.disconnect();
 }
 
-function changeSpec() {
+function changeSpec(preserveDiscussion = false) {
   result = undefined;
+  pipeline = undefined;
+  chainView = 'idea';
+  if (preserveDiscussion !== true) monitor.reset();
   updateInput();
-  statusMessage('等待运行工作流', '选择案例或输入规格，查看任务分解和依赖关系。');
+  run.textContent = runLabel();
+  statusMessage('等待运行工作流', inputMode.value === 'idea'
+    ? '输入想法或选择案例，依次生成需求规格、设计规格、任务编排、设计回填和测试方案。'
+    : '输入已有设计规格，查看任务分解和依赖关系。');
+  renderChain();
 }
-spec.value = examples[0].spec;
-updateInput();
+spec.value = examples[0].idea;
 spec.addEventListener('input', changeSpec);
 example.addEventListener('change', () => {
-  spec.value = examples[example.value]?.spec ?? '';
+  const field = inputMode.value === 'idea' ? 'idea' : 'spec';
+  spec.value = examples[example.value]?.[field] ?? '';
   changeSpec();
   if (!example.value) spec.focus();
+});
+inputMode.addEventListener('change', () => {
+  const item = examples[example.value];
+  if (item) spec.value = inputMode.value === 'idea' ? item.idea : item.spec;
+  changeSpec();
 });
 file.addEventListener('change', async () => {
   const chosen = file.files[0];
@@ -128,46 +172,117 @@ byId('key-form').addEventListener('submit', event => {
 
 function lock(value) {
   busy = value;
-  for (const control of [spec, example, capacity, file, replay, run]) control.disabled = value;
+  for (const control of [spec, inputMode, example, capacity, file, replay, run]) control.disabled = value;
   notice.classList.toggle('busy', value);
-  run.textContent = value ? '正在生成…' : '运行工作流 ↗';
+  run.textContent = value ? '正在生成…' : runLabel();
+}
+
+async function requestStage(endpoint, body) {
+  const labels = {discussion:'讨论提炼',requirements:'想法 → 需求规格',design:'需求 → 设计规格',
+    decompose:'设计 → WBS → 编排', 'test-plan':'设计与任务 → 测试方案'};
+  const label = labels[endpoint] || endpoint;
+  const started = performance.now();
+  monitor.log(label, '开始', '已提交 DeepSeek API 请求');
+  try {
+    const response = await fetch(apiBase + '/api/' + endpoint, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({...body, apiKey: pageKey}),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    monitor.log(label, '完成', '产物通过结构校验，耗时 ' + ((performance.now()-started)/1000).toFixed(1) + ' 秒',
+      {model:data.model, validations: data.validations || []});
+    for (const message of data.validations || []) monitor.log(label, '校验修正', message);
+    return data;
+  } catch (error) {
+    monitor.log(label, '失败', error.message);
+    throw error;
+  }
+}
+
+async function runPipeline(idea) {
+  pipeline ??= {idea};
+  if (!pipeline.requirements) {
+    runningStage = 'requirements';
+    renderChain();
+    statusMessage('正在生成需求规格', '作业一 · 将产品想法整理为编号需求和验收条件。');
+    const data = await requestStage('requirements', {idea});
+    pipeline.requirements = data.requirements;
+    chainView = 'requirements';
+  }
+  if (!pipeline.design) {
+    runningStage = 'design';
+    renderChain();
+    statusMessage('正在生成设计规格', '根据需求规格生成总体设计、模块划分和接口约定。');
+    const data = await requestStage('design', {requirements: pipeline.requirements});
+    pipeline.design = data.design;
+    chainView = 'design';
+  }
+  const {requirements, design} = pipeline;
+  if (!result) {
+    runningStage = 'schedule';
+    renderChain();
+    statusMessage('正在分解并编排任务', '作业二 · 按设计条目分解任务，计算依赖和批次，然后回填到设计规格。');
+    const data = await requestStage('decompose', {requirements, design});
+    show({...data, spec: designMarkdown(requirements, design), pipeline});
+    monitor.log('任务编排', '完成', result.plan.tasks.length + ' 项任务，' + arrangement.rounds.length + ' 个执行批次');
+    chainView = 'feedback';
+  }
+  runningStage = 'tests';
+  renderChain();
+  const data = await requestStage('test-plan', {requirements, design, plan: result.plan});
+  pipeline.testPlan = data.testPlan;
+  chainView = 'tests';
+}
+
+async function ensureReady() {
+  if (!apiStatus) await checkStatus();
+  if (busy) return false;
+  if (!apiStatus) {
+    byId('input-error').textContent = '生成服务未连接。启动后再点一次「运行工作流」。';
+    return false;
+  }
+  if (!pageKey && (directFile || !apiStatus.configured)) {
+    openKeyDialog();
+    return false;
+  }
+  return true;
 }
 
 run.addEventListener('click', async () => {
   if (busy) return;
   if (spec.value.trim().length < 15) {
-    byId('input-error').textContent = '请输入至少 15 字的设计规格。';
+    byId('input-error').textContent = '请输入至少 15 字的' + modeLabel() + '。';
     spec.focus();
     return;
   }
-  if (!apiStatus) await checkStatus();
-  if (busy) return;
-  if (!apiStatus) {
-    byId('input-error').textContent = '生成服务未连接。启动后再点一次「运行工作流」。';
-    return;
+  if (!await ensureReady()) return;
+  if (result && (inputMode.value === 'design' || pipeline?.testPlan)) {
+    pipeline = undefined;
+    chainView = 'idea';
+    result = undefined;
+    monitor.resetRuntime();
   }
-  if (!pageKey && (directFile || !apiStatus.configured)) {
-    openKeyDialog();
-    return;
-  }
-  result = undefined;
   byId('input-error').textContent = '';
   lock(true);
-  statusMessage('PM Agent 正在分解任务', 'DeepSeek 正在提取需求和交付物。校验通过后，编排器会生成依赖和执行批次。');
   try {
-    const response = await fetch(apiBase + '/api/decompose', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({spec: spec.value, apiKey: pageKey}),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error);
-    show({...data, spec: spec.value});
+    if (inputMode.value === 'idea') {
+      await runPipeline(spec.value);
+    } else {
+      statusMessage('PM Agent 正在分解任务', 'DeepSeek 正在根据设计规格生成开发任务，编排器随后计算批次。');
+      const data = await requestStage('decompose', {spec: spec.value});
+      show({...data, spec: spec.value});
+    }
   } catch (error) {
-    statusMessage('生成失败', error.message);
+    const title = runningStage ? stepLabels.get(runningStage) + '生成失败' : '生成失败';
+    if (result) byId('input-error').textContent = title + '。' + error.message;
+    else statusMessage(title, error.message);
     if (error instanceof TypeError) await checkStatus();
   } finally {
+    runningStage = '';
     lock(false);
+    renderChain();
   }
 });
 
@@ -177,15 +292,35 @@ replay.addEventListener('change', async () => {
   if (!chosen) return;
   try {
     if (chosen.size > 1024 * 1024) throw new Error('结果文件最多 1 MB。');
-    const {provider, spec: source, plan, model, generatedAt} = JSON.parse(await chosen.text());
+    const {provider, spec: source, plan, model, generatedAt, pipeline: chain, observation} = JSON.parse(await chosen.text());
     if (busy) return;
-    if (provider !== 'deepseek' || typeof source !== 'string' || source.trim().length < 15 ||
-        source.length > 4000 || typeof model !== 'string' || !model.trim()) {
+    const input = chain === undefined ? source : chain?.idea;
+    if (provider !== 'deepseek' || typeof input !== 'string' || input.trim().length < 15 ||
+        input.length > 4000 || typeof model !== 'string' || !model.trim()) {
       throw new Error('请选择此工作台导出的 DeepSeek 结果 JSON。');
     }
-    show({provider, spec: source, plan, model, generatedAt, mode: 'imported'});
-    spec.value = source;
+    let sourceDesign = source;
+    let restoredPlan = plan;
+    if (chain) {
+      validateDesign(chain.design, chain.requirements);
+      sourceDesign = designMarkdown(chain.requirements, chain.design);
+      restoredPlan = {...plan, project: chain.requirements.project, requirements: chain.requirements.requirements};
+      schedule(restoredPlan, Number(capacity.value));
+      validateTaskLinks(restoredPlan, chain.design);
+      if (chain.testPlan !== undefined) validateTestPlan(chain.testPlan, chain.design, restoredPlan);
+    } else {
+      schedule(restoredPlan, Number(capacity.value));
+    }
+    const restoredArrangement = schedule(restoredPlan, Number(capacity.value));
+    monitor.restore(observation, restoredPlan, restoredArrangement);
+    pipeline = chain;
+    inputMode.value = chain ? 'idea' : 'design';
+    chainView = chain ? 'design' : 'idea';
+    show({provider, spec: sourceDesign, plan: restoredPlan, model, generatedAt, pipeline, mode: 'imported'});
+    spec.value = input;
     updateInput();
+    run.textContent = runLabel();
+    renderChain();
   } catch (error) {
     byId('input-error').textContent = error instanceof SyntaxError ? '结果文件不是有效的 JSON。' : error.message;
   }
@@ -208,7 +343,9 @@ function show(data) {
 capacity.addEventListener('change', () => {
   if (!result) return;
   arrangement = schedule(result.plan, Number(capacity.value));
+  monitor.log('重新编排', '完成', '每批并行上限 ' + capacity.value + '，共 ' + arrangement.rounds.length + ' 批');
   render();
+  renderChain();
 });
 tabs.forEach(button => button.addEventListener('click', () => {
   active = button.dataset.view;
@@ -216,6 +353,10 @@ tabs.forEach(button => button.addEventListener('click', () => {
 }));
 
 byId('go-spec').addEventListener('click', () => {
+  if (pipeline?.design) {
+    openChain('design');
+    return;
+  }
   byId('input-title').scrollIntoView({block: 'start'});
   if (!busy) spec.focus({preventScroll: true});
 });
@@ -236,6 +377,115 @@ function openResults(viewName) {
 
 byId('go-tasks').addEventListener('click', () => openResults('tasks'));
 byId('go-graph').addEventListener('click', () => openResults('graph'));
+
+function openChain(step) {
+  chainView = step;
+  renderChain();
+  if (step === 'schedule') {
+    openResults('graph');
+    return;
+  }
+  byId('chain-content').focus();
+}
+
+function designCard(part) {
+  const card = element('article', '', 'chain-card');
+  card.append(element('h4', part.id + ' · ' + part.title),
+    element('p', '关联需求：' + part.requirements.join('、'), 'hint'),
+    element('p', part.design),
+    element('p', '接口与数据约定：' + part.contract));
+  return card;
+}
+
+function renderChain() {
+  const chain = byId('chain');
+  chain.hidden = inputMode.value !== 'idea';
+  if (chain.hidden) return;
+  const available = {
+    idea: Boolean(spec.value.trim()), requirements: Boolean(pipeline?.requirements),
+    design: Boolean(pipeline?.design), schedule: Boolean(result), feedback: Boolean(result),
+    tests: Boolean(pipeline?.testPlan),
+  };
+  byId('chain-steps').replaceChildren(...steps.map(([id, label]) => {
+    const step = element('button', label);
+    step.type = 'button';
+    step.disabled = !available[id];
+    step.setAttribute('aria-pressed', String(id === chainView));
+    step.append(element('span', id === runningStage ? '生成中' : available[id]
+      ? (id === 'idea' ? '原始输入' : '可查看') : '待生成'));
+    step.addEventListener('click', () => openChain(id));
+    return step;
+  }));
+  const content = byId('chain-content');
+  content.replaceChildren();
+  if (chainView === 'schedule') {
+    content.append(element('p', '设计规格 → 开发任务 → 依赖图和执行批次。请在下方切换查看。', 'hint'));
+    return;
+  }
+  if (chainView === 'idea') {
+    content.append(element('h3', '原始产品想法'), element('p', spec.value || '请在左侧填写产品想法。', 'chain-text'));
+    return;
+  }
+  const {requirements, design} = pipeline;
+  if (chainView === 'requirements') {
+    content.append(element('h3', '作业一 · 需求规格'),
+      element('p', '目标：' + requirements.goal), element('p', '项目范围：' + requirements.scope));
+    for (const req of requirements.requirements) {
+      const card = element('article', '', 'chain-card');
+      card.append(element('h4', req.id + ' · ' + req.text), element('p', '验收：' + req.acceptance));
+      content.append(card);
+    }
+    return;
+  }
+  if (chainView === 'design') {
+    content.append(element('h3', '设计规格 · 总体设计与模块'), element('p', design.summary));
+    content.append(...design.components.map(designCard));
+    return;
+  }
+  if (chainView === 'tests') {
+    const {strategy, cases} = pipeline.testPlan;
+    content.append(element('h3', '测试方案'), element('p', strategy));
+    for (const test of cases) {
+      const card = element('article', '', 'chain-card');
+      const link = element('button', '查看测试任务 ' + test.task, 'task-link');
+      link.type = 'button';
+      link.addEventListener('click', () => locateGraphTask(test.task));
+      const list = element('ol', '', 'test-steps');
+      test.steps.forEach(step => list.append(element('li', step)));
+      const batch = arrangement.rounds.findIndex(ids => ids.includes(test.task)) + 1;
+      card.append(element('h4', test.id + ' · ' + test.title),
+        element('p', test.requirements.join('、') + ' → ' + test.design + ' → ' + test.task + ' · 第 ' + batch + ' 批',
+          'hint'),
+        element('p', '前置条件：' + test.setup), list,
+        element('p', '预期结果：' + test.expected), link);
+      content.append(card);
+    }
+    return;
+  }
+  content.append(element('h3', '设计规格回填版'), element('p', design.summary),
+    element('p', '每项设计下列出编排结果、前置任务和验收依据。调整并行上限后同步更新批次。', 'hint'));
+  for (const part of designFeedback(design, result.plan, arrangement)) {
+    const card = designCard(part);
+    for (const task of part.tasks) {
+      const row = element('div', '', 'feedback-task');
+      const link = element('button', task.id + ' · ' + task.title, 'task-link');
+      link.type = 'button';
+      link.addEventListener('click', () => locateGraphTask(task.id));
+      row.append(link, element('p', '第 ' + task.batch + ' 批 · ' + task.role + ' · 交付物 ' + task.output),
+        element('p', '前置任务：' + (task.predecessors.join('、') || '无') + '。验收：' + task.acceptance));
+      card.append(row);
+    }
+    content.append(card);
+  }
+}
+
+function locateGraphTask(id) {
+  selected = id;
+  openResults('graph');
+  const node = byId('node-' + id);
+  node.scrollIntoView({block: 'nearest', inline: 'center'});
+  node.focus({preventScroll: true});
+}
 
 function metrics() {
   const items = [
@@ -269,6 +519,7 @@ function taskCard(task, full = false, interactive = false) {
       element('p', '声明输入：' + (task.inputs.join('、') || 'Design Spec')),
       element('p', '交付：' + task.output),
       element('p', '验收：' + task.acceptance));
+    if (result.pipeline) card.append(element('p', '设计来源：' + task.designs.join('、')));
     const added = arrangement.edges.filter(edge => edge.to === task.id && !task.inputs.includes(edge.artifact));
     if (added.length) card.append(element('p', '编排补齐的输入：' + added.map(edge => edge.artifact).join('、')));
   }
@@ -317,8 +568,8 @@ export const executeCoreTask = async (req: Request, res: Response) => {
 
   box.innerHTML = '<div style="background:#f8faf9; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #d6e2da;">'
                 + '<div style="display:flex; align-items:center; gap:10px;">'
-                + '<span style="color:#0b654c; font-weight:bold; font-size:14px;">🤖 AI Coder Agent</span>'
-                + '<span style="background:#e9f3ed; color:#0b654c; font-size:12px; padding:2px 8px; border-radius:12px; border:1px solid #c2dfd3;">已通过语法检查 ✅</span>'
+                + '<span style="color:#0b654c; font-weight:bold; font-size:14px;">后端代码示例</span>'
+                + '<span style="background:#e9f3ed; color:#0b654c; font-size:12px; padding:2px 8px; border-radius:12px; border:1px solid #c2dfd3;">内置展示片段 · 待适配与验证</span>'
                 + '</div>'
                 + '<button id="close-code-btn" style="background:#0b654c; color:white; border:none; padding:6px 16px; border-radius:6px; cursor:pointer; font-weight:bold; font-size:13px; transition:0.2s;" onmouseover="this.style.background=\'#094b39\'" onmouseout="this.style.background=\'#0b654c\'">关闭</button>'
                 + '</div>'
@@ -337,12 +588,6 @@ export const executeCoreTask = async (req: Request, res: Response) => {
       const chunk = codeStr.slice(i, i + 5);
       codeEl.textContent += chunk;
       
-      codeEl.innerHTML = codeEl.textContent
-        .replace(/(import|from|const|await|async|return|try|catch|export|default)/g, '<span style="color:#8250df; font-weight:bold;">$1</span>')
-        .replace(/('[^']*')/g, '<span style="color:#b35900;">$1</span>')
-        .replace(/(\/\/.*)/g, '<span style="color:#1a7f37;">$1</span>')
-        .replace(/(executeCoreTask|create|console|log|json)/g, '<span style="color:#0550ae;">$1</span>');
-        
       i += 5;
       codeEl.parentElement.scrollTop = codeEl.parentElement.scrollHeight;
       setTimeout(typeCode, 10); 
@@ -379,13 +624,7 @@ function listTasks() {
       const card = taskCard(task, true);
       const locate = element('button', '在依赖图中查看', 'task-link');
       locate.type = 'button';
-      locate.addEventListener('click', () => {
-        selected = task.id;
-        openResults('graph');
-        const node = byId('node-' + task.id);
-        node.scrollIntoView({block: 'nearest', inline: 'center'});
-        node.focus({preventScroll: true});
-      });
+      locate.addEventListener('click', () => locateGraphTask(task.id));
       card.append(locate);
       return card;
     }));
@@ -647,6 +886,7 @@ function render() {
   if (active === 'tasks') listTasks();
   if (active === 'graph') showGraph(tasks);
   if (active === 'rounds') showRounds(tasks);
+  if (active === 'execution') monitor.renderExecution(view);
 }
 
 function edgeReason(edge, target) {
@@ -664,7 +904,10 @@ function downloadFile(name, text, type) {
 }
 
 byId('download').addEventListener('click', () => {
-  downloadFile('se-workflow.json', JSON.stringify({...result, arrangement}, null, 2), 'application/json');
+  const feedback = result.pipeline && designFeedback(result.pipeline.design, result.plan, arrangement);
+  downloadFile('se-workflow.json', JSON.stringify({...result, arrangement, designFeedback: feedback,
+    observation: monitor.snapshot()}, null, 2),
+    'application/json');
 });
 
 byId('report').addEventListener('click', () => {
@@ -686,7 +929,9 @@ byId('report').addEventListener('click', () => {
   for (const task of plan.tasks) {
     lines.push('### ' + task.id + ' · ' + task.title, '',
       '- 角色：' + task.role, '- 关联需求：' + task.requirements.join('、'),
-      '- 交付物：' + task.output, '- 验收：' + task.acceptance, '');
+      '- 交付物：' + task.output, '- 验收：' + task.acceptance);
+    if (result.pipeline) lines.push('- 设计来源：' + task.designs.join('、'));
+    lines.push('');
   }
   lines.push('## 任务依赖', '');
   for (const edge of arrangement.edges) {
@@ -696,10 +941,37 @@ byId('report').addEventListener('click', () => {
   lines.push('', '## 执行批次', '', '上一批全部完成后，下一批才开始。同批任务可并行。', '');
   arrangement.rounds.forEach((ids, index) => lines.push(
     '- 第 ' + (index + 1) + ' 批 · ' + ids.map(id => id + ' ' + byTask.get(id).title).join('、')));
-  lines.push('', '## 原始 Design Spec', '', ...result.spec.split(/\r?\n/).map(line => '> ' + line));
+  if (result.pipeline) {
+    const {idea, requirements, design, testPlan} = result.pipeline;
+    lines.push('', '## 原始产品想法', '', idea, '', '## 作业一需求规格的目标与范围', '',
+      '- 目标：' + requirements.goal, '- 范围：' + requirements.scope, '', '## 编排回填到设计规格', '');
+    for (const part of designFeedback(design, plan, arrangement)) {
+      lines.push('### ' + part.id + ' · ' + part.title, '', '关联需求：' + part.requirements.join('、'));
+      for (const task of part.tasks) {
+        lines.push('- ' + task.id + ' · ' + task.title + ' · ' + task.role + ' · 第 ' + task.batch + ' 批',
+          '  - 交付物：' + task.output, '  - 前置任务：' + (task.predecessors.join('、') || '无'),
+          '  - 验收：' + task.acceptance);
+      }
+      lines.push('');
+    }
+    if (testPlan) {
+      lines.push('## 测试方案', '', testPlan.strategy, '');
+      for (const test of testPlan.cases) {
+        const batch = arrangement.rounds.findIndex(ids => ids.includes(test.task)) + 1;
+        lines.push('### ' + test.id + ' · ' + test.title, '',
+          '关联：' + test.requirements.join('、') + ' → ' + test.design + ' → ' + test.task + ' · 第 ' + batch + ' 批',
+          '', '前置条件：' + test.setup, '');
+        test.steps.forEach((step, index) => lines.push((index + 1) + '. ' + step));
+        lines.push('', '预期结果：' + test.expected, '');
+      }
+    }
+  }
+  lines.push('', result.pipeline ? '## 送入编排的设计规格' : '## 原始 Design Spec', '',
+    ...result.spec.split(/\r?\n/).map(line => '> ' + line));
   downloadFile('开发执行计划.md', lines.join('\n') + '\n', 'text/markdown;charset=utf-8');
 });
 
 byId('startup').hidden = true;
 for (const id of ['workspace', 'mast-actions', 'flow']) byId(id).hidden = false;
+changeSpec();
 void checkStatus();
